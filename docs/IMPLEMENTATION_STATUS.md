@@ -5,7 +5,7 @@
 "**Tested**" means an automated test exists **and was executed green**, with evidence recorded in §3. Code merely existing is never "Tested" (blueprint §27: *"do not claim completion based only on code existing"*).
 
 **App version:** 0.1.0
-**Last updated:** 2026-07-15 — end of Phase 3
+**Last updated:** 2026-07-15 — end of Phase 4
 
 ---
 
@@ -17,7 +17,7 @@
 | 1 | Project foundation | **Tested** | §3.1 |
 | 2 | Database and migrations | **Tested** | §3.2 |
 | 3 | Discovery and fingerprinting | **Tested** | §3.3 |
-| 4 | WhatsApp parser | Not started | — |
+| 4 | WhatsApp parser | **Tested** | §3.4 |
 | 5 | Metadata matcher | Not started | — |
 | 6 | Transcription worker | Not started | — |
 | 7 | No-repeat and recovery | Not started | — |
@@ -51,7 +51,7 @@
 | # | Item | Status |
 |---|---|---|
 | D1 | Recursive audio scan | **Tested** — recursive supported-format scan with isolated per-file errors |
-| D2 | Recursive chat scan | Not started |
+| D2 | Recursive chat scan | In progress — versioned parser complete; recursive chat-root discovery lands with metadata orchestration |
 | D3 | Source files untouched | **Tested** — scanner only reads/stat/hashes; synthetic source SHA is unchanged |
 | D4 | SHA-256 identity | **Tested** — source versions use SHA-256 as final authority |
 | D5 | Move/relink | **Tested** — moved bytes retain their logical record and completed state |
@@ -290,6 +290,28 @@ relinked by SHA-256 with its completed state and both paths retained; changed by
 source version and state `stale_source_changed`; files sharing a basename but not bytes remain
 separate; zero-byte and decode-error records do not stop other files; and the scanner leaves source
 bytes exactly unchanged. No real inputs were opened.
+
+### 3.4 — Phase 4 (complete)
+
+**Gate: “All synthetic parser tests pass; unparsed headers reported safely.”**
+
+Delivered `app/parsing/whatsapp_parser.py`: a versioned parser that extracts only attachment metadata
+needed for matching, strips BOM and hidden direction marks, produces a normalized header hash, and
+keeps the original sender/chat/time fields separate. It recognises Indonesian/English date layouts,
+dot/colon separators, 12/24-hour time, two/four-digit years, bracketed/dash headers, multiline
+messages, punctuation/colon-containing senders, media omissions, and duplicate export content.
+Unrecognised non-empty lines are counted diagnostically, not retained or logged as chat bodies.
+
+**Quality gate:**
+
+```text
+ruff check app worker tests scripts   All checks passed
+mypy app worker                       Success: no issues found in 25 source files
+pytest -m "not realdata"              65 passed
+scripts/scan_private_data.py          PASSED — 54 git-tracked files, no private data
+```
+
+The Phase 4 fixtures are synthetic and no real chat export was opened.
 
 ## 4. Known gaps / blocked items
 
