@@ -168,7 +168,8 @@ first-run wizard · empty database · folder picker · scan · model choice · t
 
 ## 7. Limited real-data test (blueprint §23.6, Phase 13) — **max 20 files**
 
-Source: `D:\vn\WhatsApp Voice Notes` (read-only).
+Source: the operator's local corpus, configured at runtime (read-only). The path is
+never committed to this public repository.
 
 Selection (documented, reproducible): very short · medium · longer · clear · noisy · different subfolders · matched metadata · unmatched metadata · duplicate basename if available.
 

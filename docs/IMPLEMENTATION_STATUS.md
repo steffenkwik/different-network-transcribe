@@ -4,8 +4,8 @@
 
 "**Tested**" means an automated test exists **and was executed green**, with evidence recorded in §3. Code merely existing is never "Tested" (blueprint §27: *"do not claim completion based only on code existing"*).
 
-**App version:** 0.0.0 (pre-Phase-1)
-**Last updated:** 2026-07-14 — end of Phase 0
+**App version:** 0.1.0
+**Last updated:** 2026-07-15 — end of Phase 1
 
 ---
 
@@ -14,7 +14,7 @@
 | Phase | Name | Status | Gate evidence |
 |---|---|---|---|
 | 0 | Safe inspection + design docs | **Tested** | §3.0 |
-| 1 | Project foundation | Not started | — |
+| 1 | Project foundation | **Tested** | §3.1 |
 | 2 | Database and migrations | Not started | — |
 | 3 | Discovery and fingerprinting | Not started | — |
 | 4 | WhatsApp parser | Not started | — |
@@ -35,16 +35,16 @@
 
 | # | Item | Status |
 |---|---|---|
-| A1 | Application name is Different Network Transcribe | Not started |
-| A2 | Indonesian UI | Not started |
-| A3 | Four simple navigation sections | Not started |
-| A4 | First-run wizard | Not started |
-| A5 | Small/Medium choice | Not started |
-| A6 | No manual Python installation | Not started |
-| A7 | No terminal required | Not started |
-| A8 | UI stays responsive | Not started |
-| A9 | Separate worker | Not started |
-| A10 | Duplicate workers blocked | Not started |
+| A1 | Application name is Different Network Transcribe | **Tested** — `test_main_window_opens_empty` asserts the window title |
+| A2 | Indonesian UI | In progress — all strings centralised in `app/resources/strings_id.py`; sections land in Phase 9 |
+| A3 | Four simple navigation sections | Not started (Phase 9) |
+| A4 | First-run wizard | Not started (Phase 9) |
+| A5 | Small/Medium choice | Not started (Phase 6/9) |
+| A6 | No manual Python installation | Not started (Phase 11) |
+| A7 | No terminal required | Not started (Phase 11) |
+| A8 | UI stays responsive | In progress — worker is a separate process by construction; measured in Phase 9 |
+| A9 | Separate worker | In progress — process boundary + `--worker` dispatch exist and are enforced by tests; runtime lands in Phase 6 |
+| A10 | Duplicate workers blocked | Not started (Phase 6) |
 
 ### Data
 
@@ -135,12 +135,12 @@
 
 | # | Item | Status |
 |---|---|---|
-| P1 | Local-only | Not started |
-| P2 | No API | Not started |
-| P3 | No telemetry by default | Not started |
-| P4 | Logs avoid transcript bodies | Not started |
-| P5 | No destructive source operation | Not started |
-| P6 | Restore uses staging and validation | Not started |
+| P1 | Local-only | **Tested** — `test_no_unexpected_network_endpoints` allows only Hugging Face model-weight hosts |
+| P2 | No API | **Tested** — `test_no_cloud_or_telemetry_sdk_anywhere` |
+| P3 | No telemetry by default | **Tested** — `test_privacy_defaults_are_off` + `test_privacy_cannot_be_switched_on` |
+| P4 | Logs avoid transcript bodies | **Tested** — `test_transcript_body_never_reaches_the_log` reads the log file back off disk |
+| P5 | No destructive source operation | Not started (Phase 3) |
+| P6 | Restore uses staging and validation | Not started (Phase 10) |
 
 ## 3. Gate evidence log
 
@@ -163,23 +163,23 @@
 **Toolchain verified (measured, not assumed):**
 
 ```text
-Python           3.12.10   C:\Users\danie\AppData\Local\Programs\Python\Python312\python.exe
+Python           3.12.10   per-user install under %LOCALAPPDATA%
 PySide6          6.8.1.1   import OK
 faster-whisper   1.1.1     import OK
 av (PyAV)        13.1.0    import OK
 ctranslate2      4.8.1     import OK
 onnxruntime      1.27.0    import OK (Silero VAD)
 SQLite           3.49.1    FTS5 available: True
-Inno Setup       6.7.3     C:\Users\danie\AppData\Local\Programs\Inno Setup 6\ISCC.exe
+Inno Setup       6.7.3     ISCC.exe found under %LOCALAPPDATA%\Programs
 git              2.54.0
 CPU              AMD Ryzen 7 9800X3D — 8C/16T  → presets 6 / 11 / 14 threads
 RAM              31.05 GB
 ```
 
-**Safe inspection of real data (counts only, no content read, nothing modified):**
+**Safe inspection of real data (counts only, no content read, nothing modified).**
+The corpus path is intentionally omitted from this public repository:
 
 ```text
-D:\vn\WhatsApp Voice Notes
   .opus     13,126        .txt (chat exports)   353
   .nomedia     110        .json                   1
   .wav           1        zero-byte files       109
@@ -189,6 +189,49 @@ D:\vn\WhatsApp Voice Notes
 **Privacy controls active before any code was written:** `.gitignore` committed first, excluding all audio extensions, `*.sqlite3`, `*.dntbackup`, `Output/`, `Logs/`, `Backups/`, `Models/`, `Temp/`, `real-fixtures/`.
 
 **Boundary compliance:** No transcription run. No file in `D:\vn` opened for reading content. No data uploaded. No cloud API contacted.
+
+### 3.1 — Phase 1 (complete)
+
+**Gate: "application opens empty; tests run."**
+
+Evidence — the real entry point, launched as a real process, rendering a real window:
+
+```text
+> python -m app.main --data-dir <temp> --self-test
+INFO ui: ui starting
+INFO ui: self-test finished
+SELF_TEST PASS visible=True title='Different Network Transcribe' platform='windows' version=0.1.0
+exit code: 0
+```
+
+The `--self-test` flag opens the window, confirms it rendered, and exits. It is reused by the
+Phase 11 packaging gate to prove the installed build and portable ZIP start with no system Python.
+
+**Quality gate:**
+
+```text
+ruff check app worker tests scripts   All checks passed!
+mypy app worker                       Success: no issues found in 20 source files
+pytest -m "not realdata"              40 passed
+scripts/scan_private_data.py          PASSED — 46 git-tracked files, no private data
+```
+
+**Defects found and fixed during this phase (not hidden):**
+
+1. The private-data scanner **failed on my own design documents** — `docs/IMPLEMENTATION_PLAN.md`,
+   `docs/IMPLEMENTATION_STATUS.md` and `docs/TEST_MATRIX.md` had embedded the operator's real corpus
+   path and a `C:\Users\<name>` path. In a public repository, git history is permanent, so these were
+   removed before the first push. The scanner earned its place on day one.
+2. Two architecture tests were initially matching their **own docstrings** rather than real code.
+   Fixed by parsing module-level imports via AST and excluding docstring constants.
+3. `os.replace` / `datetime.timezone.utc` / `os.path.expanduser` lint findings and one mypy
+   `int()` argument-type error — all fixed, none suppressed.
+
+**Delivered:** `pyproject.toml`, `requirements-lock.txt`, `app/version.py`, `app/paths.py`,
+`app/config.py` (TOML, validated, last-known-good, unknown-field preservation),
+`app/logging_setup.py` (JSONL, privacy filter), `app/main.py` (dual-role entry point),
+`app/ui/launch.py`, `app/resources/strings_id.py`, `worker/main.py` (Qt-free bootstrap),
+`scripts/{setup-dev,test}.ps1`, `scripts/scan_private_data.py`, `.github/workflows/ci.yml`.
 
 ## 4. Known gaps / blocked items
 

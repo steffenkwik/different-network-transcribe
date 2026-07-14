@@ -13,7 +13,7 @@
 | CPU | AMD Ryzen 7 9800X3D — 8 cores / 16 logical | measured |
 | RAM | 31.05 GB | measured |
 | Free disk | C: 199 GB · D: 141 GB · E: 181 GB | measured |
-| Python (build/runtime) | 3.12.10 at `%LOCALAPPDATA%\Programs\Python\Python312` | installed this session |
+| Python (build/runtime) | 3.12.10 (per-user install under `%LOCALAPPDATA%`) | installed this session |
 | Inno Setup | 6.7.3 — `%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe` | installed this session |
 | git | 2.54.0 | measured |
 | GitHub CLI | installed, needs shell restart to resolve on PATH | installed this session |
@@ -29,7 +29,8 @@
 
 ## 2. Real data profile (read-only scan, counts only — no content read)
 
-Source: `D:\vn\WhatsApp Voice Notes`
+Source: the operator's local voice-note corpus. **The path is deliberately not recorded in this
+public repository** — it is configured at runtime and lives only in the local config file.
 
 | Item | Count |
 |---|---|
@@ -42,7 +43,7 @@ Source: `D:\vn\WhatsApp Voice Notes`
 | Subfolders | 110 |
 | Total size | 0.50 GB |
 
-This confirms the ~13,000-file scale in the blueprint. **This folder is read-only for the application and for this agent.** At most 20 files are used, for Phase 13 only.
+This confirms the ~13,000-file scale in the blueprint. **The corpus is read-only for the application and for this agent.** At most 20 files are used, for Phase 13 only.
 
 ## 3. Pinned dependency stack (resolved, not guessed)
 
