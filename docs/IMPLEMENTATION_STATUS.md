@@ -5,7 +5,7 @@
 "**Tested**" means an automated test exists **and was executed green**, with evidence recorded in §3. Code merely existing is never "Tested" (blueprint §27: *"do not claim completion based only on code existing"*).
 
 **App version:** 0.1.0
-**Last updated:** 2026-07-15 — end of Phase 2
+**Last updated:** 2026-07-15 — end of Phase 3
 
 ---
 
@@ -16,7 +16,7 @@
 | 0 | Safe inspection + design docs | **Tested** | §3.0 |
 | 1 | Project foundation | **Tested** | §3.1 |
 | 2 | Database and migrations | **Tested** | §3.2 |
-| 3 | Discovery and fingerprinting | Not started | — |
+| 3 | Discovery and fingerprinting | **Tested** | §3.3 |
 | 4 | WhatsApp parser | Not started | — |
 | 5 | Metadata matcher | Not started | — |
 | 6 | Transcription worker | Not started | — |
@@ -50,11 +50,11 @@
 
 | # | Item | Status |
 |---|---|---|
-| D1 | Recursive audio scan | Not started |
+| D1 | Recursive audio scan | **Tested** — recursive supported-format scan with isolated per-file errors |
 | D2 | Recursive chat scan | Not started |
-| D3 | Source files untouched | Not started |
-| D4 | SHA-256 identity | Not started |
-| D5 | Move/relink | Not started |
+| D3 | Source files untouched | **Tested** — scanner only reads/stat/hashes; synthetic source SHA is unchanged |
+| D4 | SHA-256 identity | **Tested** — source versions use SHA-256 as final authority |
+| D5 | Move/relink | **Tested** — moved bytes retain their logical record and completed state |
 | D6 | SQLite state | **Tested** — WAL, foreign keys, integrity and FTS5 verified |
 | D7 | Schema migrations | **Tested** — checksum verification, idempotency and rollback-safe transactions |
 | D8 | Backups | Implemented — SQLite online backup API tested; package/restore UI lands in Phase 10 |
@@ -265,6 +265,31 @@ The database gate covers: initial schema, idempotent upgrade, pre-upgrade backup
 rejection, WAL/foreign keys/integrity, immutable completed transcript text, FTS5, online-backup
 consistency, paged/lazy list queries, settings round trip, and the 13,000-record performance target.
 No real input folder was scanned or opened.
+
+### 3.3 — Phase 3 (complete)
+
+**Gate: “Repeated scan creates no duplicate records; moved fingerprint can relink; source files unchanged.”**
+
+Delivered `app/services/discovery_service.py` and `AudioRepository`: recursive discovery for all
+supported formats, SHA-256 streamed in 1 MiB blocks, separate Windows creation/modification fields,
+PyAV duration probing, zero-byte/unreadable isolation, duplicate-basename groups, current and
+historical source versions, and path history. The scanner only opens sources for reading; it has no
+delete, rename, move, overwrite, or conversion path.
+
+**Quality gate:**
+
+```text
+ruff check app worker tests scripts   All checks passed
+mypy app worker                       Success: no issues found in 24 source files
+pytest -m "not realdata"              57 passed
+scripts/scan_private_data.py          PASSED — 52 git-tracked files, no private data
+```
+
+Synthetic tests prove: an unchanged rescan creates zero records and zero attempts; a moved file is
+relinked by SHA-256 with its completed state and both paths retained; changed bytes create a second
+source version and state `stale_source_changed`; files sharing a basename but not bytes remain
+separate; zero-byte and decode-error records do not stop other files; and the scanner leaves source
+bytes exactly unchanged. No real inputs were opened.
 
 ## 4. Known gaps / blocked items
 
