@@ -14,8 +14,11 @@ import logging
 from pathlib import Path
 
 from app import config as config_mod
+from app.database.migrations import MigrationRunner
 from app.logging_setup import setup_logging
 from app.paths import DataPaths
+from app.transcription.engine import FasterWhisperEngine
+from worker.runtime import WorkerLoop
 
 
 def run_worker(data_dir: Path, instance_token: str) -> int:
@@ -38,6 +41,29 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
         extra={"instance_token": instance_token, "data_root": str(paths.root)},
     )
 
-    # Phase 6 replaces this with WorkerLoop(...).run().
-    log.info("worker runtime not implemented yet (arrives in Phase 6)")
+    MigrationRunner(
+        paths.database_file,
+        Path(__file__).resolve().parents[1] / "migrations",
+        paths.backups_dir,
+    ).migrate()
+    model_directory = paths.models_dir / cfg.transcription.default_model
+    if not model_directory.is_dir():
+        log.error("model missing", extra={"model": cfg.transcription.default_model})
+        return 3
+    worker = WorkerLoop(
+        paths.database_file,
+        instance_token,
+        FasterWhisperEngine(model_directory, language=cfg.transcription.language),
+    )
+    try:
+        worker.start()
+        while worker.run_one():
+            pass
+    except Exception:
+        log.exception("worker failed")
+        if worker.session_id is not None:
+            worker.repository.stop(worker.session_id, failed=True)
+        return 1
+    finally:
+        worker.close()
     return 0

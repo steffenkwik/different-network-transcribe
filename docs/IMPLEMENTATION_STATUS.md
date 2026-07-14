@@ -5,7 +5,7 @@
 "**Tested**" means an automated test exists **and was executed green**, with evidence recorded in §3. Code merely existing is never "Tested" (blueprint §27: *"do not claim completion based only on code existing"*).
 
 **App version:** 0.1.0
-**Last updated:** 2026-07-15 — end of Phase 5
+**Last updated:** 2026-07-15 — Phase 6 in progress
 
 ---
 
@@ -19,7 +19,7 @@
 | 3 | Discovery and fingerprinting | **Tested** | §3.3 |
 | 4 | WhatsApp parser | **Tested** | §3.4 |
 | 5 | Metadata matcher | **Tested** | §3.5 |
-| 6 | Transcription worker | Not started | — |
+| 6 | Transcription worker | **In progress** | §3.6 (partial) |
 | 7 | No-repeat and recovery | Not started | — |
 | 8 | Exporters | Not started | — |
 | 9 | UI | Not started | — |
@@ -43,8 +43,8 @@
 | A6 | No manual Python installation | Not started (Phase 11) |
 | A7 | No terminal required | Not started (Phase 11) |
 | A8 | UI stays responsive | In progress — worker is a separate process by construction; measured in Phase 9 |
-| A9 | Separate worker | In progress — process boundary + `--worker` dispatch exist and are enforced by tests; runtime lands in Phase 6 |
-| A10 | Duplicate workers blocked | Not started (Phase 6) |
+| A9 | Separate worker | Implemented — Qt-free worker runtime, entry-point dispatch and local engine adapter |
+| A10 | Duplicate workers blocked | **Tested** — live SQLite lease blocks a second worker |
 
 ### Data
 
@@ -78,12 +78,12 @@
 |---|---|---|
 | T1 | Small works | Not started |
 | T2 | Medium works | Not started |
-| T3 | Model loaded once | Not started |
-| T4 | Pause works | Not started |
-| T5 | Safe stop works | Not started |
+| T3 | Model loaded once | **Tested** with deterministic local engine; real-model confirmation pending |
+| T4 | Pause works | In progress |
+| T5 | Safe stop works | **Tested** with deterministic local engine; real-model confirmation pending |
 | T6 | Resume works | Not started |
-| T7 | Failed file does not stop queue | Not started |
-| T8 | Attempt history preserved | Not started |
+| T7 | Failed file does not stop queue | **Tested** with deterministic local engine |
+| T8 | Attempt history preserved | **Tested** — completed/failed/interrupted attempt rows retained |
 | T9 | Completed files skipped | Not started |
 | T10 | Changed files versioned | Not started |
 | T11 | Deleted output regenerated without transcription | Not started |
@@ -334,6 +334,22 @@ scripts/scan_private_data.py          PASSED — 56 git-tracked files, no privat
 ```
 
 All Phase 5 cases use synthetic metadata; no real export was opened.
+
+### 3.6 — Phase 6 (in progress)
+
+Implemented the Qt-free `WorkerLoop`, SQLite lease/heartbeat/command repository, per-file attempt
+claim/commit/failure transactions, safe-stop command handling, and stale-session recovery. The worker
+uses a local-only `TranscriptionEngine` interface; `FasterWhisperEngine` is a CPU `int8` adapter that
+loads a model once and consumes segments before a completed attempt is written.
+
+The current deterministic worker gate is green: duplicate live leases are rejected; two files load the
+engine once and create independent completed attempts; one failed input does not prevent the next;
+safe stop claims no new work and releases the lease; stale `processing` rows become `interrupted` and
+only their audio returns to `queued`; and a missing local model returns a safe setup status.
+
+Phase 6 remains **in progress** until the model registry is implemented, explicit model download/import
+and checksum verification are tested, and a real local-model synthetic-audio smoke test passes. No
+real input folder has been opened.
 
 ## 4. Known gaps / blocked items
 
