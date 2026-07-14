@@ -5,7 +5,7 @@
 "**Tested**" means an automated test exists **and was executed green**, with evidence recorded in §3. Code merely existing is never "Tested" (blueprint §27: *"do not claim completion based only on code existing"*).
 
 **App version:** 0.1.0
-**Last updated:** 2026-07-15 — end of Phase 4
+**Last updated:** 2026-07-15 — end of Phase 5
 
 ---
 
@@ -18,7 +18,7 @@
 | 2 | Database and migrations | **Tested** | §3.2 |
 | 3 | Discovery and fingerprinting | **Tested** | §3.3 |
 | 4 | WhatsApp parser | **Tested** | §3.4 |
-| 5 | Metadata matcher | Not started | — |
+| 5 | Metadata matcher | **Tested** | §3.5 |
 | 6 | Transcription worker | Not started | — |
 | 7 | No-repeat and recovery | Not started | — |
 | 8 | Exporters | Not started | — |
@@ -64,9 +64,9 @@
 
 | # | Item | Status |
 |---|---|---|
-| M1 | Sender parsed when evidence exists | Not started |
-| M2 | Chat parsed | Not started |
-| M3 | WhatsApp timestamp parsed | Not started |
+| M1 | Sender parsed when evidence exists | **Tested** — unique exact filename only |
+| M2 | Chat parsed | **Tested** — preserved only for high-confidence selected match |
+| M3 | WhatsApp timestamp parsed | **Tested** — parsed separately and never inferred from filesystem time |
 | M4 | Windows creation time stored separately | Not started |
 | M5 | Windows modification time stored separately | Not started |
 | M6 | Unknown values not guessed | Not started |
@@ -312,6 +312,28 @@ scripts/scan_private_data.py          PASSED — 54 git-tracked files, no privat
 ```
 
 The Phase 4 fixtures are synthetic and no real chat export was opened.
+
+### 3.5 — Phase 5 (complete)
+
+**Gate: “No sender guessing; ambiguous test stays ambiguous.”**
+
+Delivered `app/matching/metadata_matcher.py`: a pure, explicit confidence model. A unique exact
+filename match selects metadata at 1.00 confidence; a unique canonical record after duplicate-export
+removal selects at 0.95. Multiple filename candidates remain `exact_ambiguous`, absent filenames
+remain `filename_not_present`, and timestamp-only hints stay at 0.69 with no selected metadata.
+The matcher returns candidate IDs for review but never propagates sender, chat, or WhatsApp time below
+the configurable 0.90 threshold.
+
+**Quality gate:**
+
+```text
+ruff check app worker tests scripts   All checks passed
+mypy app worker                       Success: no issues found in 26 source files
+pytest -m "not realdata"              71 passed
+scripts/scan_private_data.py          PASSED — 56 git-tracked files, no private data
+```
+
+All Phase 5 cases use synthetic metadata; no real export was opened.
 
 ## 4. Known gaps / blocked items
 
