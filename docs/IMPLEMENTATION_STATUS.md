@@ -5,7 +5,7 @@
 "**Tested**" means an automated test exists **and was executed green**, with evidence recorded in §3. Code merely existing is never "Tested" (blueprint §27: *"do not claim completion based only on code existing"*).
 
 **App version:** 0.1.0
-**Last updated:** 2026-07-15 — end of Phase 1
+**Last updated:** 2026-07-15 — end of Phase 2
 
 ---
 
@@ -15,7 +15,7 @@
 |---|---|---|---|
 | 0 | Safe inspection + design docs | **Tested** | §3.0 |
 | 1 | Project foundation | **Tested** | §3.1 |
-| 2 | Database and migrations | Not started | — |
+| 2 | Database and migrations | **Tested** | §3.2 |
 | 3 | Discovery and fingerprinting | Not started | — |
 | 4 | WhatsApp parser | Not started | — |
 | 5 | Metadata matcher | Not started | — |
@@ -55,9 +55,9 @@
 | D3 | Source files untouched | Not started |
 | D4 | SHA-256 identity | Not started |
 | D5 | Move/relink | Not started |
-| D6 | SQLite state | Not started |
-| D7 | Schema migrations | Not started |
-| D8 | Backups | Not started |
+| D6 | SQLite state | **Tested** — WAL, foreign keys, integrity and FTS5 verified |
+| D7 | Schema migrations | **Tested** — checksum verification, idempotency and rollback-safe transactions |
+| D8 | Backups | Implemented — SQLite online backup API tested; package/restore UI lands in Phase 10 |
 | D9 | Restore | Not started |
 
 ### Metadata
@@ -232,6 +232,39 @@ scripts/scan_private_data.py          PASSED — 46 git-tracked files, no privat
 `app/logging_setup.py` (JSONL, privacy filter), `app/main.py` (dual-role entry point),
 `app/ui/launch.py`, `app/resources/strings_id.py`, `worker/main.py` (Qt-free bootstrap),
 `scripts/{setup-dev,test}.ps1`, `scripts/scan_private_data.py`, `.github/workflows/ci.yml`.
+
+### 3.2 — Phase 2 (complete)
+
+**Gate: “13,000 synthetic records; paging performance acceptable; migration and backup tests pass.”**
+
+Delivered `migrations/0001_initial.sql` and `0002_add_query_indexes.sql` (17 durable tables,
+FTS5, indexes, immutability triggers, the transcript-list view), plus `app/database/connection.py`,
+`migrations.py`, and `repositories.py`. Every connection enables foreign keys, WAL, `NORMAL`
+synchronous mode, and a 5-second busy timeout. The migration runner verifies checksums, applies
+each migration atomically, and creates an online SQLite backup before changing an existing schema.
+
+**Measured synthetic 13,000-record benchmark:**
+
+```text
+insert                 0.147 s
+first 100-row page     0.010 s  (target < 1.000 s)
+page at offset 6,000   0.012 s  (target < 0.500 s)
+indexed filename filter 0.007 s (target < 1.000 s)
+```
+
+**Quality gate:**
+
+```text
+ruff check app worker tests scripts   All checks passed
+mypy app worker                       Success: no issues found in 23 source files
+pytest -m "not realdata"              50 passed in 4.02 s
+scripts/scan_private_data.py          PASSED — 46 git-tracked files, no private data
+```
+
+The database gate covers: initial schema, idempotent upgrade, pre-upgrade backup, checksum-tamper
+rejection, WAL/foreign keys/integrity, immutable completed transcript text, FTS5, online-backup
+consistency, paged/lazy list queries, settings round trip, and the 13,000-record performance target.
+No real input folder was scanned or opened.
 
 ## 4. Known gaps / blocked items
 
