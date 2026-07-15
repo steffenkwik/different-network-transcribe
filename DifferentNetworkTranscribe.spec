@@ -1,9 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('migrations', 'migrations')]
+datas = [
+    ('migrations\\0001_initial.sql', 'migrations'),
+    ('migrations\\0002_add_query_indexes.sql', 'migrations'),
+]
 binaries = []
 hiddenimports = []
+tmp_ret = collect_all('numpy')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('faster_whisper')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('ctranslate2')

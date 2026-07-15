@@ -12,6 +12,7 @@ $migrationFiles = Get-ChildItem "$repo\migrations" -Filter "*.sql" -File
 if ($migrationFiles.Count -eq 0) { throw "Tidak ada berkas migrasi SQL untuk dibundel." }
 $pyInstallerArgs = @(
     "--noconfirm", "--clean", "--windowed", "--onedir", "--name", "DifferentNetworkTranscribe",
+    "--specpath", "$repo\build\spec",
     "--collect-all", "numpy", "--collect-all", "faster_whisper", "--collect-all", "ctranslate2",
     "--collect-all", "av", "--collect-all", "PySide6"
 )
