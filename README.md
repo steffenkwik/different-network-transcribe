@@ -32,4 +32,5 @@ scripts\build.ps1
 ```
 
 Lihat [panduan pengguna](docs/USER_GUIDE.md), [panduan developer](docs/DEVELOPER_GUIDE.md), dan
-[catatan rilis](docs/RELEASE.md).
+[catatan rilis](docs/RELEASE.md). Untuk pengujian awal, ikuti
+[panduan test aman 20 file](docs/BEGINNER_20_FILE_TEST.md).
