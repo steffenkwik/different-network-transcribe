@@ -5,7 +5,7 @@
 "**Tested**" means an automated test exists **and was executed green**, with evidence recorded in §3. Code merely existing is never "Tested" (blueprint §27: *"do not claim completion based only on code existing"*).
 
 **App version:** 0.1.0
-**Last updated:** 2026-07-15 — Phase 7 in progress
+**Last updated:** 2026-07-15 — packaging smoke tests complete; feature integration continues
 
 ---
 
@@ -21,10 +21,10 @@
 | 5 | Metadata matcher | **Tested** | §3.5 |
 | 6 | Transcription worker | **Tested** | §3.6 |
 | 7 | No-repeat and recovery | **In progress** | §3.7 (partial) |
-| 8 | Exporters | Not started | — |
-| 9 | UI | Not started | — |
-| 10 | Backup and migration | Not started | — |
-| 11 | Packaging | Not started | — |
+| 8 | Exporters | **Tested** | SQLite-derived output/rebuild tests |
+| 9 | UI | In progress | Four-section shell + wizard tests |
+| 10 | Backup and migration | **Tested** | Temporary database package/restore tests |
+| 11 | Packaging | **Tested** | Portable and installer smoke tests pass |
 | 12 | GitHub workflows | Not started | — |
 | 13 | Limited real test (max 20) | Not started | — |
 | 14 | Final audit | Not started | — |
@@ -377,6 +377,32 @@ completed corpus.
 The remaining Phase 7 work is integration with worker queue claiming plus the deleted-export
 regeneration acceptance path, which follows the exporter implementation in Phase 8. No real input
 folder was opened.
+
+### 3.8 — Phase 8 (complete)
+
+`ExportService` reads preferred completed transcripts from SQLite only and atomically writes daily and
+individual Markdown, an index, unknown-date Markdown, daily/combined TXT, UTF-8-BOM CSV, and JSONL.
+The synthetic test proves the same DB state produces byte-identical Markdown; deleting a daily output
+and re-exporting restores it with zero added transcription attempts. Unknown timestamps never enter a
+guessed day.
+
+### 3.9/3.10/3.11 — UI, backup, and packaging checkpoint
+
+Implemented an Indonesian four-section PySide6 shell and first-run wizard, plus staging-first
+`.dntbackup` creation and restore. Restore now takes a consistent pre-restore SQLite backup before
+the validated staged replacement can become live. The built one-folder application, portable ZIP,
+Inno Setup installer, and checksum manifest exist under the ignored `release/` folder.
+
+The repeatable `scripts/smoke-test.ps1` gate was executed against both artifacts in fresh temporary
+folders. Portable extraction launched the built executable with Python removed from `PATH` and created
+the data tree. The installer completed with Inno's `Installation process succeeded` log; its installed
+executable passed the same Python-free self-test. Its uninstaller exited zero, removed application
+files, and preserved the separately selected user-data folder. The installer is intentionally per-user
+(`PrivilegesRequired=lowest`) so it does not require administrator elevation.
+
+This validates packaging only. Phase 9 remains in progress because the visible shell has not yet wired
+all scan, review, worker, export, and backup actions to the services. Phase 7 integration, GitHub
+automation, the limited real-data test, and the final audit also remain incomplete.
 
 ## 4. Known gaps / blocked items
 
