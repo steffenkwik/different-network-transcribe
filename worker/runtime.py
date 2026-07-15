@@ -27,7 +27,7 @@ class WorkerLoop:
         self.stopped = False
 
     def start(self) -> int:
-        self.session_id = self.repository.acquire_lease(self.instance_token, os.getpid())
+        self.session_id = self.repository.attach_lease(self.instance_token, os.getpid())
         # This is the sole bridge from discovered records to worker-claimable
         # rows. It records completed sources as skipped instead of re-inferencing
         # them when a session is started again.

@@ -43,6 +43,25 @@ class WorkerRepository:
                 raise RuntimeError("Sesi worker tidak dapat dibuat.")
             return cursor.lastrowid
 
+    def attach_lease(self, instance_token: str, pid: int | None) -> int:
+        """Attach a spawned worker to the lease its UI parent created.
+
+        Direct test/CLI use remains supported by falling back to lease acquisition.
+        """
+        with transaction(self.connection, immediate=True):
+            row = self.connection.execute(
+                "SELECT id, state FROM worker_sessions WHERE instance_token = ?", (instance_token,)
+            ).fetchone()
+            if row is not None:
+                if row["state"] not in {"starting", "idle"}:
+                    raise RuntimeError("Sesi worker tidak dapat dilanjutkan.")
+                self.connection.execute(
+                    "UPDATE worker_sessions SET pid = ?, heartbeat_at = ?, state = 'starting' WHERE id = ?",
+                    (pid, now(), row["id"]),
+                )
+                return int(row["id"])
+        return self.acquire_lease(instance_token, pid)
+
     def heartbeat(self, session_id: int, state: str) -> None:
         self.connection.execute(
             "UPDATE worker_sessions SET heartbeat_at = ?, state = ? WHERE id = ?",

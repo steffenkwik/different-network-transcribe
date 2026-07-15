@@ -8,14 +8,17 @@ from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
     QWizard,
@@ -26,6 +29,7 @@ from app import config as config_mod
 from app.logging_setup import new_session_id, setup_logging
 from app.paths import DataPaths, default_data_root
 from app.resources import strings_id as S
+from app.services.application_service import ApplicationService
 from app.version import APP_NAME, APP_VERSION
 
 
@@ -87,9 +91,10 @@ class FirstRunWizard(QWizard):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, paths: DataPaths | None = None) -> None:
+    def __init__(self, paths: DataPaths | None = None, service: ApplicationService | None = None) -> None:
         super().__init__()
         self.paths = paths
+        self.service = service
         self.setWindowTitle(APP_NAME)
         self.resize(1180, 760)
         central = QWidget()
@@ -113,21 +118,28 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.addWidget(QLabel(f"{APP_NAME} {APP_VERSION}"))
-        layout.addWidget(
-            QLabel(
-                "Total VN: 0    Selesai: 0    Belum Diproses: 0    Perlu Diperiksa: 0    Gagal: 0"
-            )
-        )
-        for label in (
-            S.ACTION_SCAN,
-            S.ACTION_TEST_20,
-            S.ACTION_START,
-            S.ACTION_PAUSE,
-            S.ACTION_SAFE_STOP,
-            S.ACTION_EXPORT,
-            S.ACTION_OPEN_OUTPUT,
-        ):
-            layout.addWidget(QPushButton(label))
+        self.summary_label = QLabel()
+        layout.addWidget(self.summary_label)
+        self.scan_button = QPushButton(S.ACTION_SCAN)
+        self.scan_button.clicked.connect(self._scan)
+        layout.addWidget(self.scan_button)
+        self.test_button = QPushButton(S.ACTION_TEST_20)
+        self.test_button.setEnabled(False)
+        self.test_button.setToolTip("Pilih batch uji setelah pengaturan worker tersedia.")
+        layout.addWidget(self.test_button)
+        self.start_button = QPushButton(S.ACTION_START)
+        self.start_button.clicked.connect(self._start)
+        layout.addWidget(self.start_button)
+        self.pause_button = QPushButton(S.ACTION_PAUSE)
+        self.pause_button.clicked.connect(self._pause)
+        layout.addWidget(self.pause_button)
+        self.stop_button = QPushButton(S.ACTION_SAFE_STOP)
+        self.stop_button.clicked.connect(self._safe_stop)
+        layout.addWidget(self.stop_button)
+        self.export_button = QPushButton(S.ACTION_EXPORT)
+        self.export_button.clicked.connect(self._export)
+        layout.addWidget(self.export_button)
+        layout.addWidget(QPushButton(S.ACTION_OPEN_OUTPUT))
         layout.addStretch(1)
         return page
 
@@ -135,8 +147,8 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.addWidget(QLabel(S.NAV_ALL))
-        table = QTableWidget(0, 9)
-        table.setHorizontalHeaderLabels(
+        self.table = QTableWidget(0, 9)
+        self.table.setHorizontalHeaderLabels(
             [
                 "Status",
                 "Pengirim",
@@ -149,7 +161,7 @@ class MainWindow(QMainWindow):
                 "Terakhir Diproses",
             ]
         )
-        layout.addWidget(table)
+        layout.addWidget(self.table)
         return page
 
     def _review(self) -> QWidget:
@@ -165,17 +177,140 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.addWidget(QLabel(S.NAV_SETTINGS))
         layout.addWidget(QLabel(S.MODEL_CHANGE_NOTICE))
+        self.audio_root = QLineEdit()
+        self.audio_root.setPlaceholderText("Belum ada folder audio")
+        choose = QPushButton("Pilih Folder Audio")
+        choose.clicked.connect(self._choose_audio_root)
+        save = QPushButton("Simpan Folder Audio")
+        save.clicked.connect(self._save_audio_root)
+        layout.addWidget(self.audio_root)
+        layout.addWidget(choose)
+        layout.addWidget(save)
         layout.addWidget(QPushButton("Unduh/Impor Model"))
-        layout.addWidget(QPushButton("Backup Sekarang"))
+        backup = QPushButton("Backup Sekarang")
+        backup.clicked.connect(self._backup)
+        layout.addWidget(backup)
         layout.addWidget(QPushButton("Pulihkan Paket"))
         layout.addStretch(1)
         return page
+
+    def refresh(self) -> None:
+        if self.service is None:
+            self.summary_label.setText("Total VN: 0    Selesai: 0    Belum Diproses: 0")
+            return
+        counts = self.service.dashboard_counts()
+        self.summary_label.setText(
+            f"Total VN: {counts.total}    Selesai: {counts.completed}    "
+            f"Belum Diproses: {counts.pending}    Perlu Diperiksa: {counts.review}    "
+            f"Gagal: {counts.failed}"
+        )
+        page = self.service.transcript_page(limit=100)
+        self.table.setRowCount(len(page.rows))
+        for index, row in enumerate(page.rows):
+            values = (
+                row["current_state"], row["sender"] or S.UNKNOWN_SENDER, row["chat"] or "-",
+                row["whatsapp_message_at"] or S.UNKNOWN_WHATSAPP_TIME, row["basename"],
+                row["duration_seconds"] or "-", row["model_name"] or "-", row["quality_status"] or "-",
+                row["last_processed_at"] or "-",
+            )
+            for column, value in enumerate(values):
+                self.table.setItem(index, column, QTableWidgetItem(str(value)))
+        root = self.service.configured_audio_root()
+        self.audio_root.setText("" if root is None else str(root))
+
+    def _require_service(self) -> ApplicationService | None:
+        if self.service is None:
+            QMessageBox.warning(self, APP_NAME, "Layanan aplikasi belum tersedia.")  # type: ignore[call-arg]
+        return self.service
+
+    def _show_error(self, exc: Exception) -> None:
+        QMessageBox.warning(self, APP_NAME, str(exc))  # type: ignore[call-arg]
+
+    def _scan(self) -> None:
+        service = self._require_service()
+        if service is None:
+            return
+        try:
+            summary = service.scan_audio()
+            self.refresh()
+            QMessageBox.information(
+                self, APP_NAME, f"Scan selesai: {summary.discovered} file baru, {summary.unchanged} tidak berubah."
+            )
+        except (OSError, ValueError) as exc:
+            self._show_error(exc)
+
+    def _export(self) -> None:
+        service = self._require_service()
+        if service is None:
+            return
+        try:
+            count = service.export_all()
+            QMessageBox.information(self, APP_NAME, f"Hasil dibuat untuk {count} transkrip.")
+        except OSError as exc:
+            self._show_error(exc)
+
+    def _start(self) -> None:
+        service = self._require_service()
+        if service is None:
+            return
+        try:
+            pid = service.start_transcription()
+            QMessageBox.information(self, APP_NAME, f"Worker dimulai (PID {pid}).")
+        except RuntimeError as exc:
+            self._show_error(exc)
+
+    def _pause(self) -> None:
+        service = self._require_service()
+        if service is None:
+            return
+        try:
+            service.pause_transcription()
+            QMessageBox.information(self, APP_NAME, "Permintaan jeda dikirim.")
+        except RuntimeError as exc:
+            self._show_error(exc)
+
+    def _safe_stop(self) -> None:
+        service = self._require_service()
+        if service is None:
+            return
+        try:
+            service.safe_stop_transcription()
+            QMessageBox.information(self, APP_NAME, "Permintaan berhenti aman dikirim.")
+        except RuntimeError as exc:
+            self._show_error(exc)
+
+    def _choose_audio_root(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Pilih Folder Audio")
+        if folder:
+            self.audio_root.setText(folder)
+
+    def _save_audio_root(self) -> None:
+        service = self._require_service()
+        if service is None:
+            return
+        try:
+            service.save_audio_root(Path(self.audio_root.text()))
+            QMessageBox.information(self, APP_NAME, "Folder audio disimpan.")
+        except ValueError as exc:
+            self._show_error(exc)
+
+    def _backup(self) -> None:
+        service = self._require_service()
+        if service is None:
+            return
+        try:
+            package = service.create_backup()
+            QMessageBox.information(self, APP_NAME, f"Backup dibuat: {package.name}")
+        except OSError as exc:
+            self._show_error(exc)
 
 
 def run_ui(data_dir: Path | None = None, self_test: bool = False) -> int:
     paths = DataPaths(root=data_dir or default_data_root())
     paths.ensure()
     cfg = config_mod.load(paths.config_file, paths.config_lastgood_file)
+    service = ApplicationService(paths)
+    service.ensure_database()
     setup_logging(
         paths.logs_dir,
         session_id=new_session_id(),
@@ -187,8 +322,9 @@ def run_ui(data_dir: Path | None = None, self_test: bool = False) -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
-    window = MainWindow(paths)
+    window = MainWindow(paths, service)
     window.show()
+    window.refresh()
     return _run_self_test(app, window) if self_test else app.exec()
 
 
