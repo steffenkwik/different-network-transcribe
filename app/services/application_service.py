@@ -18,6 +18,7 @@ from app.exports.exporters import ExportService
 from app.paths import DataPaths
 from app.services.chat_import_service import ChatImportService, ChatScanSummary
 from app.services.discovery_service import DiscoveryService, ScanSummary
+from app.services.metadata_matching_service import MatchingSummary, MetadataMatchingService
 from app.services.worker_control_service import WorkerControlService
 from app.version import APP_VERSION
 
@@ -81,6 +82,13 @@ class ApplicationService:
         connection = open_connection(self.paths.database_file)
         try:
             return DiscoveryService(connection).scan_audio_root(root)
+        finally:
+            connection.close()
+
+    def match_metadata(self) -> MatchingSummary:
+        connection = open_connection(self.paths.database_file)
+        try:
+            return MetadataMatchingService(connection).run()
         finally:
             connection.close()
 
