@@ -122,14 +122,16 @@ class WorkerRepository:
                 )
         return len(rows)
 
-    def claim_next(self, session_id: int) -> sqlite3.Row | None:
+    def claim_next(self, session_id: int, active_root: str | None = None) -> sqlite3.Row | None:
         with transaction(self.connection, immediate=True):
             audio = self.connection.execute(
                 """SELECT a.*, v.id AS source_version_id, s.original_path AS source_root_path FROM audio_files a
                    JOIN audio_source_versions v ON v.id = a.current_source_version_id
                    JOIN source_roots s ON s.id = a.source_root_id
                    WHERE a.current_state = 'queued' AND a.readable = 1 AND a.zero_byte = 0
-                   ORDER BY a.id LIMIT 1"""
+                     AND (? IS NULL OR s.original_path = ?)
+                   ORDER BY a.id LIMIT 1""",
+                (active_root, active_root),
             ).fetchone()
             if audio is None:
                 return None

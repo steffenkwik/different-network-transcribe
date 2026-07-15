@@ -115,6 +115,10 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._review())
         self.pages.addWidget(self._settings())
         self.setCentralWidget(central)
+        self._worker_status_timer = QTimer(self)
+        self._worker_status_timer.setInterval(750)
+        self._worker_status_timer.timeout.connect(self.refresh)
+        self._worker_status_timer.start()
 
     def _home(self) -> QWidget:
         page = QWidget()
@@ -281,7 +285,7 @@ class MainWindow(QMainWindow):
             pid = service.start_transcription()
             self.worker_label.setText(f"Memulai worker (PID {pid})…")
             QTimer.singleShot(1000, self.refresh)
-        except RuntimeError as exc:
+        except (RuntimeError, ValueError) as exc:
             self._show_error(exc)
 
     def _pause(self) -> None:

@@ -28,8 +28,9 @@ class QueueService:
     explicit request. Model, engine, export, or UI configuration are absent here.
     """
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(self, connection: sqlite3.Connection, active_root: Path | None = None) -> None:
         self.connection = connection
+        self.active_root = None if active_root is None else str(active_root.resolve())
 
     def prepare(self) -> QueuePreparation:
         rows = self.connection.execute(
@@ -44,8 +45,10 @@ class QueueService:
             LEFT JOIN audio_source_versions v ON v.id = a.current_source_version_id
             LEFT JOIN transcription_attempts t ON t.id = a.preferred_transcript_id
             WHERE a.readable = 1 AND a.zero_byte = 0
+              AND (? IS NULL OR s.original_path = ?)
             ORDER BY a.id
-            """
+            """,
+            (self.active_root, self.active_root),
         ).fetchall()
         summary = QueuePreparation()
         for row in rows:

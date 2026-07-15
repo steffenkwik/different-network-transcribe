@@ -36,3 +36,9 @@ def test_worker_requires_data_dir_and_session() -> None:
     from app.main import main
 
     assert main(["--worker"]) == 2
+
+
+def test_engine_import_self_test_flag_is_available() -> None:
+    from app.main import build_parser
+
+    assert build_parser().parse_args(["--engine-import-self-test"]).engine_import_self_test is True

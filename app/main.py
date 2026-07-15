@@ -46,11 +46,25 @@ def build_parser() -> argparse.ArgumentParser:
             "installer dan paket portable."
         ),
     )
+    parser.add_argument(
+        "--engine-import-self-test",
+        action="store_true",
+        help="Periksa dependensi mesin transkripsi tanpa membaca atau memproses audio.",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv if argv is not None else sys.argv[1:])
+
+    if args.engine_import_self_test:
+        # This intentionally does not load a model or open an audio file. It is a
+        # packaging gate for native NumPy/faster-whisper dependencies.
+        import faster_whisper
+        import numpy
+
+        print(f"ENGINE_IMPORT_SELF_TEST PASS numpy={numpy.__version__} faster_whisper={faster_whisper.__version__}")
+        return 0
 
     if args.worker:
         if args.data_dir is None or args.session is None:

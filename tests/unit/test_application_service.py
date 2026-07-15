@@ -37,3 +37,13 @@ def test_export_and_backup_are_available_without_presentation_layer(tmp_path: Pa
     service.ensure_database()
     assert service.export_all() == 0
     assert service.create_backup().suffix == ".dntbackup"
+
+
+def test_worker_cannot_start_without_an_explicit_audio_test_folder(tmp_path: Path) -> None:
+    paths = DataPaths(tmp_path / "data")
+    paths.ensure()
+    service = ApplicationService(paths)
+    service.ensure_database()
+
+    with pytest.raises(ValueError, match="folder audio uji"):
+        service.start_transcription()

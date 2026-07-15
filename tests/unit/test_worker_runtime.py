@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -167,6 +168,42 @@ def test_bad_file_fails_but_next_file_continues(database) -> None:
     worker.close()
 
 
+def test_active_root_guard_never_claims_queued_audio_from_another_folder(database) -> None:
+    """A user testing one folder must never start an old, wider queue by accident."""
+    path, connection = database
+    test_root = path.parents[2] / "source"
+    old_root = path.parents[2] / "old-source"
+    old_root.mkdir()
+    content = b"must-not-be-claimed"
+    (old_root / "old.opus").write_bytes(content)
+    root_id = connection.execute(
+        "INSERT INTO source_roots(kind, original_path, normalized_path, created_at) VALUES ('audio', ?, ?, 't')",
+        (str(old_root), str(old_root).casefold()),
+    ).lastrowid
+    audio_id = connection.execute(
+        """INSERT INTO audio_files(stable_file_id, source_root_id, current_relative_path, basename,
+           normalized_basename, extension, size_bytes, first_discovered_at, last_seen_at, current_state,
+           created_at, updated_at) VALUES ('old-audio', ?, 'old.opus', 'old.opus', 'old.opus', '.opus',
+           ?, 't', 't', 'queued', 't', 't')""",
+        (root_id, len(content)),
+    ).lastrowid
+    version_id = connection.execute(
+        "INSERT INTO audio_source_versions(audio_file_id, size_bytes, sha256, discovered_at) VALUES (?, ?, ?, 't')",
+        (audio_id, len(content), hashlib.sha256(content).hexdigest()),
+    ).lastrowid
+    connection.execute("UPDATE audio_files SET current_source_version_id = ? WHERE id = ?", (version_id, audio_id))
+
+    engine = FakeEngine()
+    worker = WorkerLoop(path, "active-root", engine, active_root=test_root)
+    worker.start()
+    while worker.run_one():
+        pass
+    worker.close()
+
+    assert engine.transcribe_count == 2
+    assert connection.execute("SELECT current_state FROM audio_files WHERE id = ?", (audio_id,)).fetchone()[0] == "queued"
+
+
 def test_duplicate_worker_lease_is_blocked(database) -> None:
     path, _ = database
     first = WorkerLoop(path, "session-c", FakeEngine())
@@ -236,6 +273,22 @@ def test_stale_processing_attempt_is_interrupted_and_only_that_audio_requeued(da
 
 
 def test_worker_entrypoint_returns_safe_missing_model_status(tmp_path: Path) -> None:
+    from app import config as config_mod
+    from app.config import AppConfig
+    from app.paths import DataPaths
     from worker.main import run_worker
 
-    assert run_worker(tmp_path / "data", "missing-model") == 3
+    paths = DataPaths(tmp_path / "data")
+    paths.ensure()
+    assert run_worker(paths.root, "no-root") == 4
+
+    source = tmp_path / "source"
+    source.mkdir()
+    config = AppConfig()
+    config.paths.audio_roots = [str(source)]
+    config_mod.save(config, paths.config_file, paths.config_lastgood_file)
+
+    assert run_worker(paths.root, "missing-model") == 3
+    status = json.loads(paths.worker_status_file.read_text(encoding="utf-8"))
+    assert status["state"] == "failed"
+    assert status["last_safe_message"] == "Model tidak ditemukan atau rusak."

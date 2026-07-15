@@ -25,6 +25,16 @@ from app.transcription.model_registry import ModelError, ModelRegistry
 from worker.runtime import WorkerLoop
 
 
+def _write_failed_status(paths: DataPaths, message: str) -> None:
+    """Report startup failures to the UI without disclosing technical/private details."""
+    paths.worker_status_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary = paths.worker_status_file.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps({"state": "failed", "last_safe_message": message}), encoding="utf-8"
+    )
+    temporary.replace(paths.worker_status_file)
+
+
 def run_worker(data_dir: Path, instance_token: str) -> int:
     paths = DataPaths(root=data_dir)
     paths.ensure()
@@ -50,11 +60,15 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
         bundled_path("migrations"),
         paths.backups_dir,
     ).migrate()
+    if not cfg.paths.audio_roots:
+        _write_failed_status(paths, "Pilih dan simpan folder audio uji terlebih dahulu.")
+        log.error("worker has no configured audio root")
+        return 4
     model_directory = paths.models_dir / cfg.transcription.default_model
     try:
         ModelRegistry(paths.models_dir).verify(cfg.transcription.default_model, full_hash=False)
     except ModelError:
-        paths.worker_status_file.write_text(json.dumps({"state": "failed", "last_safe_message": "Model tidak ditemukan atau rusak."}), encoding="utf-8")
+        _write_failed_status(paths, "Model tidak ditemukan atau rusak.")
         log.error("model missing", extra={"model": cfg.transcription.default_model})
         return 3
     worker = WorkerLoop(
@@ -62,6 +76,7 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
         instance_token,
         FasterWhisperEngine(model_directory, language=cfg.transcription.language),
         paths.worker_status_file,
+        Path(cfg.paths.audio_roots[0]),
     )
     try:
         worker.start()
@@ -73,6 +88,10 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
                 time.sleep(1)
     except Exception:
         log.exception("worker failed")
+        _write_failed_status(
+            paths,
+            "Worker gagal dimulai. Perbarui aplikasi lalu coba lagi; log teknis tersimpan lokal.",
+        )
         if worker.session_id is not None:
             worker.repository.stop(worker.session_id, failed=True)
         return 1

@@ -15,14 +15,15 @@ from app.transcription.engine import TranscriptionEngine
 
 class WorkerLoop:
     def __init__(
-        self, database_file: Path, instance_token: str, engine: TranscriptionEngine, status_file: Path | None = None
+        self, database_file: Path, instance_token: str, engine: TranscriptionEngine, status_file: Path | None = None, active_root: Path | None = None
     ) -> None:
         self.connection = open_connection(database_file)
         self.repository = WorkerRepository(self.connection)
-        self.queue_service = QueueService(self.connection)
+        self.queue_service = QueueService(self.connection, active_root)
         self.instance_token = instance_token
         self.engine = engine
         self.status_file = status_file
+        self.active_root = None if active_root is None else str(active_root.resolve())
         self.session_id: int | None = None
         self.loaded = False
         self.paused = False
@@ -71,7 +72,7 @@ class WorkerLoop:
         if self.paused:
             self.repository.heartbeat(self.session_id, "paused")
             return False
-        record = self.repository.claim_next(self.session_id)
+        record = self.repository.claim_next(self.session_id, self.active_root)
         if record is None:
             self.repository.heartbeat(self.session_id, "idle")
             self._write_status("idle")

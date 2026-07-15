@@ -135,6 +135,11 @@ class ApplicationService:
         ).create_package(config_file=self.paths.config_file)
 
     def start_transcription(self) -> int:
+        root = self.configured_audio_root()
+        if root is None:
+            raise ValueError("Pilih dan simpan folder audio uji terlebih dahulu.")
+        if not root.is_dir():
+            raise ValueError("Folder audio yang dipilih sudah tidak dapat ditemukan.")
         return self._worker_control().start()
 
     def pause_transcription(self) -> None:
