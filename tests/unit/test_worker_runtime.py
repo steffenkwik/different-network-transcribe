@@ -119,6 +119,41 @@ def test_restart_skips_completed_sources_with_zero_new_inference(database) -> No
     second.close()
 
 
+@pytest.mark.acceptance
+def test_explicit_reprocess_preserves_old_attempt_and_runs_only_selected_file(database) -> None:
+    path, connection = database
+    first = WorkerLoop(path, "baseline", FakeEngine())
+    first.start()
+    while first.run_one():
+        pass
+    first.close()
+    selected_id = int(
+        connection.execute("SELECT id FROM audio_files ORDER BY id LIMIT 1").fetchone()[0]
+    )
+
+    engine = FakeEngine()
+    second = WorkerLoop(path, "explicit-reprocess", engine)
+    session_id = second.start()
+    command_id = WorkerRepository(connection).enqueue_command(
+        session_id, "reprocess_selected", {"audio_file_ids": [selected_id]}
+    )
+    assert second.run_one() is True
+    assert engine.transcribe_count == 1
+    assert connection.execute(
+        "SELECT COUNT(*) FROM transcription_attempts WHERE audio_file_id = ?", (selected_id,)
+    ).fetchone()[0] == 2
+    assert connection.execute(
+        "SELECT COUNT(*) FROM transcription_attempts"
+    ).fetchone()[0] == 3
+    assert connection.execute(
+        "SELECT result FROM worker_commands WHERE id = ?", (command_id,)
+    ).fetchone()[0] == "requeued:1"
+    assert connection.execute(
+        "SELECT COUNT(*) FROM processing_events WHERE event_type='explicit_reprocess_requested'"
+    ).fetchone()[0] == 1
+    second.close()
+
+
 def test_bad_file_fails_but_next_file_continues(database) -> None:
     path, connection = database
     worker = WorkerLoop(path, "session-b", FakeEngine(fail_first=True))

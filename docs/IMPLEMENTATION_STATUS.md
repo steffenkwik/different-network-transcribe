@@ -20,7 +20,7 @@
 | 4 | WhatsApp parser | **Tested** | §3.4 |
 | 5 | Metadata matcher | **Tested** | §3.5 |
 | 6 | Transcription worker | **Tested** | §3.6 |
-| 7 | No-repeat and recovery | **In progress** | §3.7 (partial) |
+| 7 | No-repeat and recovery | **Tested** | §3.7 |
 | 8 | Exporters | **Tested** | SQLite-derived output/rebuild tests |
 | 9 | UI | In progress | Four-section shell + wizard tests |
 | 10 | Backup and migration | **Tested** | Temporary database package/restore tests |
@@ -375,9 +375,10 @@ full first synthetic run, starts a second worker session, and proves **zero new 
 engine inference**. The reuse function is tested to contain no provenance-key reference, which
 prevents settings/model changes from silently queueing the completed corpus.
 
-The remaining Phase 7 work is durable handling of explicit `reprocess_selected` requests. The
-deleted-export regeneration path is covered by Phase 8's SQLite-derived exporter test. No real input
-folder was opened.
+An explicit `reprocess_selected` command is now the only completed-file requeue path: it accepts a
+specific list of audio IDs, preserves the old attempt, records an audit event, and creates exactly one
+new attempt only for the selected file. The deleted-export regeneration path is covered by Phase 8's
+SQLite-derived exporter test. No real input folder was opened.
 
 ### 3.8 — Phase 8 (complete)
 

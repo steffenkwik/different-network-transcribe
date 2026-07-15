@@ -78,6 +78,31 @@ class WorkerRepository:
             (now(), result, command_id),
         )
 
+    def requeue_selected(self, audio_file_ids: list[int]) -> int:
+        """Honor an explicit, narrow reprocess request without deleting history."""
+        selected = sorted(set(audio_file_ids))
+        if not selected:
+            return 0
+        placeholders = ",".join("?" for _ in selected)
+        with transaction(self.connection, immediate=True):
+            rows = self.connection.execute(
+                f"""SELECT id FROM audio_files WHERE id IN ({placeholders})
+                       AND current_source_version_id IS NOT NULL AND readable = 1 AND zero_byte = 0""",
+                selected,
+            ).fetchall()
+            for row in rows:
+                audio_file_id = int(row["id"])
+                self.connection.execute(
+                    "UPDATE audio_files SET current_state = 'queued', updated_at = ? WHERE id = ?",
+                    (now(), audio_file_id),
+                )
+                self.connection.execute(
+                    """INSERT INTO processing_events(audio_file_id, event_type, event_at, details_json)
+                       VALUES (?, 'explicit_reprocess_requested', ?, '{}')""",
+                    (audio_file_id, now()),
+                )
+        return len(rows)
+
     def claim_next(self, session_id: int) -> sqlite3.Row | None:
         with transaction(self.connection, immediate=True):
             audio = self.connection.execute(

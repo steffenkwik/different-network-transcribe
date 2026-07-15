@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -55,6 +56,14 @@ class WorkerLoop:
             self.repository.heartbeat(self.session_id, "running")
             self.repository.complete_command(int(command["id"]))
             return False
+        if command is not None and command["command"] == "reprocess_selected":
+            payload = json.loads(str(command["payload_json"] or "{}"))
+            ids = payload.get("audio_file_ids", [])
+            if not isinstance(ids, list) or not all(isinstance(item, int) for item in ids):
+                self.repository.complete_command(int(command["id"]), "invalid_payload")
+                return False
+            requeued = self.repository.requeue_selected(ids)
+            self.repository.complete_command(int(command["id"]), f"requeued:{requeued}")
         if self.paused:
             self.repository.heartbeat(self.session_id, "paused")
             return False
