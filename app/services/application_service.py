@@ -16,6 +16,7 @@ from app.database.migrations import MigrationRunner
 from app.database.repositories import TranscriptListPage, TranscriptRepository
 from app.exports.exporters import ExportService
 from app.paths import DataPaths
+from app.services.chat_import_service import ChatImportService, ChatScanSummary
 from app.services.discovery_service import DiscoveryService, ScanSummary
 from app.services.worker_control_service import WorkerControlService
 from app.version import APP_VERSION
@@ -55,6 +56,23 @@ class ApplicationService:
         if not config.paths.audio_roots:
             return None
         return Path(config.paths.audio_roots[0])
+
+    def save_chat_root(self, folder: Path) -> None:
+        if not folder.is_dir():
+            raise ValueError("Folder ekspor chat tidak ditemukan atau bukan folder.")
+        config = config_mod.load(self.paths.config_file, self.paths.config_lastgood_file)
+        config.paths.chat_roots = [str(folder.resolve())]
+        config_mod.save(config, self.paths.config_file, self.paths.config_lastgood_file)
+
+    def scan_chats(self) -> ChatScanSummary:
+        config = config_mod.load(self.paths.config_file, self.paths.config_lastgood_file)
+        if not config.paths.chat_roots:
+            raise ValueError("Pilih folder ekspor chat terlebih dahulu.")
+        connection = open_connection(self.paths.database_file)
+        try:
+            return ChatImportService(connection).scan(Path(config.paths.chat_roots[0]))
+        finally:
+            connection.close()
 
     def scan_audio(self) -> ScanSummary:
         root = self.configured_audio_root()
