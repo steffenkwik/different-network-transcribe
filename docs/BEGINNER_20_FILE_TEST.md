@@ -17,7 +17,9 @@ langsung untuk pengujian awal.
 2. Klik **Pengaturan & Data**.
 3. Klik **Pilih Folder Audio**, pilih `D:\VN-Test-20`, lalu klik **Simpan Folder Audio**.
 4. Klik **Beranda** lalu **Scan File Baru**.
-5. Pastikan kartu **Total VN** menampilkan `20`. Jika bukan 20, berhenti dan periksa folder test.
+5. Pastikan pesan scan menyebut `20 file baru` (pada scan pertama) dan kartu **Total VN** menampilkan `20`.
+   Kartu tersebut hanya menghitung folder audio aktif; scan lama dari folder lain tidak ikut dihitung atau diproses.
+   Jika bukan 20, berhenti dan periksa folder test.
 6. Klik **Mulai / Lanjutkan**. Status worker dan progress bar harus berubah dari *Memulai worker* menjadi
    *running*, lalu selesai/idle. Jangan tutup aplikasi saat proses berjalan.
 7. Setelah selesai, klik **Buat Hasil**. Hasil ada di folder data aplikasi pada `Output`.

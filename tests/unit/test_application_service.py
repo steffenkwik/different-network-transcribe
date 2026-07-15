@@ -47,3 +47,23 @@ def test_worker_cannot_start_without_an_explicit_audio_test_folder(tmp_path: Pat
 
     with pytest.raises(ValueError, match="folder audio uji"):
         service.start_transcription()
+
+
+def test_dashboard_counts_only_the_active_audio_folder(tmp_path: Path) -> None:
+    paths = DataPaths(tmp_path / "data")
+    paths.ensure()
+    service = ApplicationService(paths)
+    service.ensure_database()
+    selected = tmp_path / "selected"
+    previous = tmp_path / "previous"
+    selected.mkdir()
+    previous.mkdir()
+    (selected / "one.opus").write_bytes(b"selected")
+    (previous / "old.opus").write_bytes(b"previous")
+    service.save_audio_root(selected)
+    service.scan_audio()
+    service.save_audio_root(previous)
+    service.scan_audio()
+    service.save_audio_root(selected)
+
+    assert service.dashboard_counts().total == 1

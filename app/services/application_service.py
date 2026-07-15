@@ -94,10 +94,19 @@ class ApplicationService:
             connection.close()
 
     def dashboard_counts(self) -> DashboardCounts:
+        active_root = self.configured_audio_root()
         connection = open_connection(self.paths.database_file, read_only=True)
         try:
             rows = connection.execute(
-                "SELECT current_state, COUNT(*) AS total FROM audio_files GROUP BY current_state"
+                """SELECT a.current_state, COUNT(*) AS total
+                   FROM audio_files a
+                   JOIN source_roots s ON s.id = a.source_root_id
+                   WHERE (? IS NULL OR s.original_path = ?)
+                   GROUP BY a.current_state""",
+                (
+                    None if active_root is None else str(active_root.resolve()),
+                    None if active_root is None else str(active_root.resolve()),
+                ),
             ).fetchall()
         finally:
             connection.close()

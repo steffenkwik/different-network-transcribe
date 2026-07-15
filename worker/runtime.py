@@ -99,7 +99,12 @@ class WorkerLoop:
         if self.status_file is None:
             return
         rows = self.connection.execute(
-            "SELECT current_state, COUNT(*) AS total FROM audio_files GROUP BY current_state"
+            """SELECT a.current_state, COUNT(*) AS total
+               FROM audio_files a
+               JOIN source_roots s ON s.id = a.source_root_id
+               WHERE (? IS NULL OR s.original_path = ?)
+               GROUP BY a.current_state""",
+            (self.active_root, self.active_root),
         ).fetchall()
         counts = {str(row["current_state"]): int(row["total"]) for row in rows}
         payload = {
