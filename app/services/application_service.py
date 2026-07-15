@@ -16,6 +16,7 @@ from app.database.migrations import MigrationRunner
 from app.database.repositories import TranscriptListPage, TranscriptRepository
 from app.exports.exporters import ExportService
 from app.paths import DataPaths
+from app.runtime import bundled_path
 from app.services.chat_import_service import ChatImportService, ChatScanSummary
 from app.services.discovery_service import DiscoveryService, ScanSummary
 from app.services.metadata_matching_service import MatchingSummary, MetadataMatchingService
@@ -41,7 +42,7 @@ class ApplicationService:
     def ensure_database(self) -> None:
         MigrationRunner(
             self.paths.database_file,
-            Path(__file__).resolve().parents[2] / "migrations",
+            bundled_path("migrations"),
             self.paths.backups_dir,
         ).migrate()
 

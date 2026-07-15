@@ -8,7 +8,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 $python = Join-Path $repo ".venv\Scripts\python.exe"
 
-& $python -m PyInstaller --noconfirm --clean --windowed --onedir --name DifferentNetworkTranscribe --collect-all faster_whisper --collect-all ctranslate2 --collect-all av --collect-all PySide6 app\main.py
+& $python -m PyInstaller --noconfirm --clean --windowed --onedir --name DifferentNetworkTranscribe --add-data "migrations;migrations" --collect-all faster_whisper --collect-all ctranslate2 --collect-all av --collect-all PySide6 app\main.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller gagal" }
 
 $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"

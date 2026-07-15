@@ -18,6 +18,7 @@ from app import config as config_mod
 from app.database.migrations import MigrationRunner
 from app.logging_setup import setup_logging
 from app.paths import DataPaths
+from app.runtime import bundled_path
 from app.transcription.engine import FasterWhisperEngine
 from app.transcription.model_registry import ModelError, ModelRegistry
 from worker.runtime import WorkerLoop
@@ -45,7 +46,7 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
 
     MigrationRunner(
         paths.database_file,
-        Path(__file__).resolve().parents[1] / "migrations",
+        bundled_path("migrations"),
         paths.backups_dir,
     ).migrate()
     model_directory = paths.models_dir / cfg.transcription.default_model
