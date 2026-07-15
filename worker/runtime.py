@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.database.connection import open_connection
@@ -14,13 +15,14 @@ from app.transcription.engine import TranscriptionEngine
 
 class WorkerLoop:
     def __init__(
-        self, database_file: Path, instance_token: str, engine: TranscriptionEngine
+        self, database_file: Path, instance_token: str, engine: TranscriptionEngine, status_file: Path | None = None
     ) -> None:
         self.connection = open_connection(database_file)
         self.repository = WorkerRepository(self.connection)
         self.queue_service = QueueService(self.connection)
         self.instance_token = instance_token
         self.engine = engine
+        self.status_file = status_file
         self.session_id: int | None = None
         self.loaded = False
         self.paused = False
@@ -35,6 +37,7 @@ class WorkerLoop:
         self.engine.load()
         self.loaded = True
         self.repository.heartbeat(self.session_id, "running")
+        self._write_status("running")
         return self.session_id
 
     def run_one(self) -> bool:
@@ -45,6 +48,7 @@ class WorkerLoop:
             self.repository.complete_command(int(command["id"]))
             self.repository.stop(self.session_id)
             self.stopped = True
+            self._write_status("stopped")
             return False
         if command is not None and command["command"] == "pause":
             self.paused = True
@@ -70,6 +74,7 @@ class WorkerLoop:
         record = self.repository.claim_next(self.session_id)
         if record is None:
             self.repository.heartbeat(self.session_id, "idle")
+            self._write_status("idle")
             return False
         try:
             result = self.engine.transcribe(
@@ -81,9 +86,28 @@ class WorkerLoop:
                 int(record["attempt_id"]), int(record["id"]), type(exc).__name__
             )
         self.repository.heartbeat(self.session_id, "running")
+        self._write_status("running")
         return True
 
     def close(self) -> None:
         if self.session_id is not None:
             self.repository.stop(self.session_id)
         self.connection.close()
+
+    def _write_status(self, state: str) -> None:
+        if self.status_file is None:
+            return
+        rows = self.connection.execute(
+            "SELECT current_state, COUNT(*) AS total FROM audio_files GROUP BY current_state"
+        ).fetchall()
+        counts = {str(row["current_state"]): int(row["total"]) for row in rows}
+        payload = {
+            "schema": 1, "instance_token": self.instance_token, "state": state,
+            "updated_at": datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
+            "counts": {"queued": counts.get("queued", 0), "completed": counts.get("completed_preferred", 0),
+                       "failed": counts.get("failed", 0)},
+        }
+        self.status_file.parent.mkdir(parents=True, exist_ok=True)
+        temp = self.status_file.with_suffix(".tmp")
+        temp.write_text(json.dumps(payload), encoding="utf-8")
+        temp.replace(self.status_file)

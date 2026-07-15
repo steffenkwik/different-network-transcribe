@@ -10,6 +10,7 @@ Enforced by tests/unit/test_architecture_layers.py.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from pathlib import Path
@@ -53,12 +54,14 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
     try:
         ModelRegistry(paths.models_dir).verify(cfg.transcription.default_model, full_hash=False)
     except ModelError:
+        paths.worker_status_file.write_text(json.dumps({"state": "failed", "last_safe_message": "Model tidak ditemukan atau rusak."}), encoding="utf-8")
         log.error("model missing", extra={"model": cfg.transcription.default_model})
         return 3
     worker = WorkerLoop(
         paths.database_file,
         instance_token,
         FasterWhisperEngine(model_directory, language=cfg.transcription.language),
+        paths.worker_status_file,
     )
     try:
         worker.start()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QStackedWidget,
     QTableWidget,
@@ -120,6 +122,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel(f"{APP_NAME} {APP_VERSION}"))
         self.summary_label = QLabel()
         layout.addWidget(self.summary_label)
+        self.worker_label = QLabel("Worker tidak aktif")
+        self.worker_progress = QProgressBar()
+        self.worker_progress.setRange(0, 100)
+        layout.addWidget(self.worker_label)
+        layout.addWidget(self.worker_progress)
         self.scan_button = QPushButton(S.ACTION_SCAN)
         self.scan_button.clicked.connect(self._scan)
         layout.addWidget(self.scan_button)
@@ -217,6 +224,23 @@ class MainWindow(QMainWindow):
                 self.table.setItem(index, column, QTableWidgetItem(str(value)))
         root = self.service.configured_audio_root()
         self.audio_root.setText("" if root is None else str(root))
+        self._refresh_worker_status()
+
+    def _refresh_worker_status(self) -> None:
+        if self.paths is None or not self.paths.worker_status_file.is_file():
+            self.worker_label.setText("Worker tidak aktif")
+            self.worker_progress.setValue(0)
+            return
+        try:
+            status = json.loads(self.paths.worker_status_file.read_text(encoding="utf-8"))
+            counts = status.get("counts", {})
+            queued = int(counts.get("queued", 0))
+            completed = int(counts.get("completed", 0))
+            total = queued + completed
+            self.worker_label.setText(status.get("last_safe_message") or f"Worker: {status.get('state', 'tidak diketahui')}")
+            self.worker_progress.setValue(0 if total == 0 else round(100 * completed / total))
+        except (OSError, ValueError, TypeError):
+            self.worker_label.setText("Status worker tidak dapat dibaca")
 
     def _require_service(self) -> ApplicationService | None:
         if self.service is None:
@@ -255,7 +279,8 @@ class MainWindow(QMainWindow):
             return
         try:
             pid = service.start_transcription()
-            QMessageBox.information(self, APP_NAME, f"Worker dimulai (PID {pid}).")
+            self.worker_label.setText(f"Memulai worker (PID {pid})…")
+            QTimer.singleShot(1000, self.refresh)
         except RuntimeError as exc:
             self._show_error(exc)
 
