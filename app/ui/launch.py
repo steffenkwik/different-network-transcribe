@@ -6,7 +6,8 @@ import json
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -150,7 +151,9 @@ class MainWindow(QMainWindow):
         self.export_button = QPushButton(S.ACTION_EXPORT)
         self.export_button.clicked.connect(self._export)
         layout.addWidget(self.export_button)
-        layout.addWidget(QPushButton(S.ACTION_OPEN_OUTPUT))
+        self.open_output_button = QPushButton(S.ACTION_OPEN_OUTPUT)
+        self.open_output_button.clicked.connect(self._open_output)
+        layout.addWidget(self.open_output_button)
         layout.addStretch(1)
         return page
 
@@ -276,6 +279,16 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, APP_NAME, f"Hasil dibuat untuk {count} transkrip.")
         except OSError as exc:
             self._show_error(exc)
+
+    def _open_output(self) -> None:
+        """Open only the app-owned derived-output directory in Windows Explorer."""
+        if self.paths is None:
+            QMessageBox.warning(self, APP_NAME, "Folder hasil belum tersedia.")  # type: ignore[call-arg]
+            return
+        self.paths.output_dir.mkdir(parents=True, exist_ok=True)
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.paths.output_dir)))
+        if not opened:
+            QMessageBox.warning(self, APP_NAME, "Folder hasil tidak dapat dibuka.")  # type: ignore[call-arg]
 
     def _start(self) -> None:
         service = self._require_service()

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+
+from app.paths import DataPaths
 
 pytestmark = [pytest.mark.ui]
 
@@ -42,3 +45,17 @@ def test_engine_import_self_test_flag_is_available() -> None:
     from app.main import build_parser
 
     assert build_parser().parse_args(["--engine-import-self-test"]).engine_import_self_test is True
+
+
+def test_open_output_button_opens_the_app_owned_output_folder(qtbot, tmp_path: Path) -> None:
+    from app.ui.launch import MainWindow
+
+    paths = DataPaths(tmp_path / "data")
+    paths.ensure()
+    window = MainWindow(paths=paths)
+    qtbot.addWidget(window)
+    with patch("app.ui.launch.QDesktopServices.openUrl", return_value=True) as open_url:
+        window._open_output()
+
+    assert paths.output_dir.is_dir()
+    assert open_url.call_count == 1
