@@ -8,7 +8,21 @@ $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 $python = Join-Path $repo ".venv\Scripts\python.exe"
 
-& $python -m PyInstaller --noconfirm --clean --windowed --onedir --name DifferentNetworkTranscribe --add-data "migrations;migrations" --collect-all numpy --collect-all faster_whisper --collect-all ctranslate2 --collect-all av --collect-all PySide6 app\main.py
+$migrationFiles = Get-ChildItem "$repo\migrations" -Filter "*.sql" -File
+if ($migrationFiles.Count -eq 0) { throw "Tidak ada berkas migrasi SQL untuk dibundel." }
+$pyInstallerArgs = @(
+    "--noconfirm", "--clean", "--windowed", "--onedir", "--name", "DifferentNetworkTranscribe",
+    "--collect-all", "numpy", "--collect-all", "faster_whisper", "--collect-all", "ctranslate2",
+    "--collect-all", "av", "--collect-all", "PySide6"
+)
+foreach ($migration in $migrationFiles) {
+    # Add each SQL file explicitly. Passing the directory proved unreliable in
+    # the frozen one-folder layout and resulted in an empty migrations folder.
+    $pyInstallerArgs += "--add-data"
+    $pyInstallerArgs += "$($migration.FullName);migrations"
+}
+$pyInstallerArgs += "app\main.py"
+& $python -m PyInstaller @pyInstallerArgs
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller gagal" }
 
 $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"

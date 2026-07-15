@@ -41,6 +41,7 @@ function Test-Portable {
     Expand-Archive -LiteralPath "release\DifferentNetworkTranscribe-Portable-x64.zip" -DestinationPath $root -Force
     $exe = Get-ChildItem -LiteralPath $root -Filter "DifferentNetworkTranscribe.exe" -Recurse | Select-Object -First 1
     if ($null -eq $exe) { throw "Portable ZIP tidak berisi executable." }
+    Start-DntProcess $exe.FullName "--engine-import-self-test" $true
     Start-DntProcess $exe.FullName ('--data-dir "' + $data + '" --self-test') $true
     if ((Get-ChildItem -LiteralPath $data -Directory | Measure-Object).Count -lt 7) {
         throw "Portable build tidak membuat struktur data."
@@ -60,6 +61,7 @@ function Test-Installer {
     if (-not (Test-Path -LiteralPath $exe) -or -not (Test-Path -LiteralPath $log)) {
         throw "Installer tidak menghasilkan executable atau log."
     }
+    Start-DntProcess $exe "--engine-import-self-test" $true
     Start-DntProcess $exe ('--data-dir "' + $data + '" --self-test') $true
     $uninstaller = Join-Path $application "unins000.exe"
     if (-not (Test-Path -LiteralPath $uninstaller)) { throw "Uninstaller tidak ditemukan." }
