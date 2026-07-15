@@ -5,7 +5,7 @@
 "**Tested**" means an automated test exists **and was executed green**, with evidence recorded in §3. Code merely existing is never "Tested" (blueprint §27: *"do not claim completion based only on code existing"*).
 
 **App version:** 0.1.0
-**Last updated:** 2026-07-15 — Phase 6 in progress
+**Last updated:** 2026-07-15 — end of Phase 6
 
 ---
 
@@ -19,7 +19,7 @@
 | 3 | Discovery and fingerprinting | **Tested** | §3.3 |
 | 4 | WhatsApp parser | **Tested** | §3.4 |
 | 5 | Metadata matcher | **Tested** | §3.5 |
-| 6 | Transcription worker | **In progress** | §3.6 (partial) |
+| 6 | Transcription worker | **Tested** | §3.6 |
 | 7 | No-repeat and recovery | Not started | — |
 | 8 | Exporters | Not started | — |
 | 9 | UI | Not started | — |
@@ -39,7 +39,7 @@
 | A2 | Indonesian UI | In progress — all strings centralised in `app/resources/strings_id.py`; sections land in Phase 9 |
 | A3 | Four simple navigation sections | Not started (Phase 9) |
 | A4 | First-run wizard | Not started (Phase 9) |
-| A5 | Small/Medium choice | Not started (Phase 6/9) |
+| A5 | Small/Medium choice | Implemented — explicit verified local Small/Medium install; UI choice lands in Phase 9 |
 | A6 | No manual Python installation | Not started (Phase 11) |
 | A7 | No terminal required | Not started (Phase 11) |
 | A8 | UI stays responsive | In progress — worker is a separate process by construction; measured in Phase 9 |
@@ -76,13 +76,13 @@
 
 | # | Item | Status |
 |---|---|---|
-| T1 | Small works | Not started |
-| T2 | Medium works | Not started |
-| T3 | Model loaded once | **Tested** with deterministic local engine; real-model confirmation pending |
-| T4 | Pause works | In progress |
-| T5 | Safe stop works | **Tested** with deterministic local engine; real-model confirmation pending |
-| T6 | Resume works | Not started |
-| T7 | Failed file does not stop queue | **Tested** with deterministic local engine |
+| T1 | Small works | **Tested** — verified and locally loaded; synthetic-audio inference smoke passed |
+| T2 | Medium works | **Tested** — verified and locally loaded in CPU int8 mode |
+| T3 | Model loaded once | **Tested** — deterministic worker assertion |
+| T4 | Pause works | **Tested** — durable pause command transitions without claiming new work |
+| T5 | Safe stop works | **Tested** — releases lease without claiming new work |
+| T6 | Resume works | Implemented — command table protocol; end-to-end UI validation lands in Phase 9 |
+| T7 | Failed file does not stop queue | **Tested** — one failed record followed by one completed record |
 | T8 | Attempt history preserved | **Tested** — completed/failed/interrupted attempt rows retained |
 | T9 | Completed files skipped | Not started |
 | T10 | Changed files versioned | Not started |
@@ -335,7 +335,7 @@ scripts/scan_private_data.py          PASSED — 56 git-tracked files, no privat
 
 All Phase 5 cases use synthetic metadata; no real export was opened.
 
-### 3.6 — Phase 6 (in progress)
+### 3.6 — Phase 6 (complete)
 
 Implemented the Qt-free `WorkerLoop`, SQLite lease/heartbeat/command repository, per-file attempt
 claim/commit/failure transactions, safe-stop command handling, and stale-session recovery. The worker
@@ -347,9 +347,24 @@ engine once and create independent completed attempts; one failed input does not
 safe stop claims no new work and releases the lease; stale `processing` rows become `interrupted` and
 only their audio returns to `queued`; and a missing local model returns a safe setup status.
 
-Phase 6 remains **in progress** until the model registry is implemented, explicit model download/import
-and checksum verification are tested, and a real local-model synthetic-audio smoke test passes. No
-real input folder has been opened.
+Completed the model registry with explicit-only Hugging Face download and offline ZIP import, partial
+directory isolation, zip-slip rejection, required-artifact checks, full SHA-256 manifests, atomic
+promotion, and safe preservation of a valid existing install. Both locally installed models verified
+their required six artifacts. Small and Medium loaded through Faster-Whisper in CPU `int8` mode; Small
+also completed one local inference on a generated one-second synthetic tone (zero transcript characters,
+expected under VAD). The generated temporary file was deleted.
+
+**Quality gate:**
+
+```text
+ruff check app worker tests scripts   All checks passed
+mypy app worker                       Success: no issues found in 30 source files
+pytest -m "not realdata"              82 passed
+scripts/scan_private_data.py          PASSED — 62 git-tracked files, no private data
+```
+
+No real input folder was opened. Model weights reside in the ignored application-data folder and are
+not tracked by Git.
 
 ## 4. Known gaps / blocked items
 

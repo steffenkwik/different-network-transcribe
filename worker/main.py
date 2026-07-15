@@ -11,6 +11,7 @@ Enforced by tests/unit/test_architecture_layers.py.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 from app import config as config_mod
@@ -18,6 +19,7 @@ from app.database.migrations import MigrationRunner
 from app.logging_setup import setup_logging
 from app.paths import DataPaths
 from app.transcription.engine import FasterWhisperEngine
+from app.transcription.model_registry import ModelError, ModelRegistry
 from worker.runtime import WorkerLoop
 
 
@@ -47,7 +49,9 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
         paths.backups_dir,
     ).migrate()
     model_directory = paths.models_dir / cfg.transcription.default_model
-    if not model_directory.is_dir():
+    try:
+        ModelRegistry(paths.models_dir).verify(cfg.transcription.default_model, full_hash=False)
+    except ModelError:
         log.error("model missing", extra={"model": cfg.transcription.default_model})
         return 3
     worker = WorkerLoop(
@@ -57,8 +61,12 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
     )
     try:
         worker.start()
-        while worker.run_one():
-            pass
+        while not worker.stopped:
+            did_work = worker.run_one()
+            if worker.stopped or (not did_work and not worker.paused):
+                break
+            if not did_work:
+                time.sleep(1)
     except Exception:
         log.exception("worker failed")
         if worker.session_id is not None:

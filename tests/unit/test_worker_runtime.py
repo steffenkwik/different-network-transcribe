@@ -129,6 +129,22 @@ def test_safe_stop_releases_lease_without_claiming_new_work(database) -> None:
     worker.connection.close()
 
 
+def test_pause_then_resume_does_not_claim_work_while_paused(database) -> None:
+    path, connection = database
+    worker = WorkerLoop(path, "session-pause", FakeEngine())
+    session_id = worker.start()
+    repository = WorkerRepository(connection)
+    repository.enqueue_command(session_id, "pause")
+    assert worker.run_one() is False
+    assert worker.paused is True
+    assert connection.execute("SELECT COUNT(*) FROM transcription_attempts").fetchone()[0] == 0
+    repository.enqueue_command(session_id, "resume")
+    assert worker.run_one() is False
+    assert worker.paused is False
+    assert worker.run_one() is True
+    worker.close()
+
+
 def test_stale_processing_attempt_is_interrupted_and_only_that_audio_requeued(database) -> None:
     _, connection = database
     repository = WorkerRepository(connection)

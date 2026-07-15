@@ -20,6 +20,8 @@ class WorkerLoop:
         self.engine = engine
         self.session_id: int | None = None
         self.loaded = False
+        self.paused = False
+        self.stopped = False
 
     def start(self) -> int:
         self.session_id = self.repository.acquire_lease(self.instance_token, os.getpid())
@@ -35,10 +37,20 @@ class WorkerLoop:
         if command is not None and command["command"] in {"safe_stop", "shutdown"}:
             self.repository.complete_command(int(command["id"]))
             self.repository.stop(self.session_id)
+            self.stopped = True
             return False
         if command is not None and command["command"] == "pause":
+            self.paused = True
             self.repository.heartbeat(self.session_id, "paused")
             self.repository.complete_command(int(command["id"]))
+            return False
+        if command is not None and command["command"] == "resume":
+            self.paused = False
+            self.repository.heartbeat(self.session_id, "running")
+            self.repository.complete_command(int(command["id"]))
+            return False
+        if self.paused:
+            self.repository.heartbeat(self.session_id, "paused")
             return False
         record = self.repository.claim_next(self.session_id)
         if record is None:
