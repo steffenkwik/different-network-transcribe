@@ -5,7 +5,7 @@
 "**Tested**" means an automated test exists **and was executed green**, with evidence recorded in §3. Code merely existing is never "Tested" (blueprint §27: *"do not claim completion based only on code existing"*).
 
 **App version:** 0.1.0
-**Last updated:** 2026-07-15 — end of Phase 6
+**Last updated:** 2026-07-15 — Phase 7 in progress
 
 ---
 
@@ -20,7 +20,7 @@
 | 4 | WhatsApp parser | **Tested** | §3.4 |
 | 5 | Metadata matcher | **Tested** | §3.5 |
 | 6 | Transcription worker | **Tested** | §3.6 |
-| 7 | No-repeat and recovery | Not started | — |
+| 7 | No-repeat and recovery | **In progress** | §3.7 (partial) |
 | 8 | Exporters | Not started | — |
 | 9 | UI | Not started | — |
 | 10 | Backup and migration | Not started | — |
@@ -365,6 +365,18 @@ scripts/scan_private_data.py          PASSED — 62 git-tracked files, no privat
 
 No real input folder was opened. Model weights reside in the ignored application-data folder and are
 not tracked by Git.
+
+### 3.7 — Phase 7 (in progress)
+
+Implemented the single reuse decision point and the 12-field provenance key. An unchanged completed
+source returns `skipped_complete`; only absent source, changed SHA-256, missing/invalid preferred
+transcript, or an explicit reprocess request can make it claimable. The reuse function is tested to
+contain no provenance-key reference, which prevents settings/model changes from silently queueing the
+completed corpus.
+
+The remaining Phase 7 work is integration with worker queue claiming plus the deleted-export
+regeneration acceptance path, which follows the exporter implementation in Phase 8. No real input
+folder was opened.
 
 ## 4. Known gaps / blocked items
 
