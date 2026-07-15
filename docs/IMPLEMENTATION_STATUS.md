@@ -368,14 +368,15 @@ not tracked by Git.
 
 ### 3.7 — Phase 7 (in progress)
 
-Implemented the single reuse decision point and the 12-field provenance key. An unchanged completed
-source returns `skipped_complete`; only absent source, changed SHA-256, missing/invalid preferred
-transcript, or an explicit reprocess request can make it claimable. The reuse function is tested to
-contain no provenance-key reference, which prevents settings/model changes from silently queueing the
-completed corpus.
+Implemented the single reuse decision point and the 12-field provenance key. `QueueService` now
+performs the byte-level reuse check at every worker startup: unchanged preferred transcripts produce a
+durable `skipped_complete` event and never become claimable. The worker's acceptance test performs a
+full first synthetic run, starts a second worker session, and proves **zero new attempts and zero
+engine inference**. The reuse function is tested to contain no provenance-key reference, which
+prevents settings/model changes from silently queueing the completed corpus.
 
-The remaining Phase 7 work is integration with worker queue claiming plus the deleted-export
-regeneration acceptance path, which follows the exporter implementation in Phase 8. No real input
+The remaining Phase 7 work is durable handling of explicit `reprocess_selected` requests. The
+deleted-export regeneration path is covered by Phase 8's SQLite-derived exporter test. No real input
 folder was opened.
 
 ### 3.8 — Phase 8 (complete)

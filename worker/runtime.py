@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.database.connection import open_connection
 from app.database.worker_repository import WorkerRepository
+from app.services.queue_service import QueueService
 from app.transcription.engine import TranscriptionEngine
 
 
@@ -16,6 +17,7 @@ class WorkerLoop:
     ) -> None:
         self.connection = open_connection(database_file)
         self.repository = WorkerRepository(self.connection)
+        self.queue_service = QueueService(self.connection)
         self.instance_token = instance_token
         self.engine = engine
         self.session_id: int | None = None
@@ -25,6 +27,10 @@ class WorkerLoop:
 
     def start(self) -> int:
         self.session_id = self.repository.acquire_lease(self.instance_token, os.getpid())
+        # This is the sole bridge from discovered records to worker-claimable
+        # rows. It records completed sources as skipped instead of re-inferencing
+        # them when a session is started again.
+        self.queue_service.prepare()
         self.engine.load()
         self.loaded = True
         self.repository.heartbeat(self.session_id, "running")

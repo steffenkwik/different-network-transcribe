@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -40,26 +41,31 @@ def database(tmp_path: Path):
     MigrationRunner(path, REPO_ROOT / "migrations", tmp_path / "data" / "Backups").migrate()
     connection = open_connection(path)
     try:
+        source = tmp_path / "source"
+        source.mkdir()
         root = connection.execute(
             "INSERT INTO source_roots(kind, original_path, normalized_path, created_at) VALUES ('audio', ?, ?, 't')",
             (str(tmp_path / "source"), str(tmp_path / "source").casefold()),
         ).lastrowid
         for index in range(2):
+            content = f"synthetic-source-{index}".encode()
+            (source / f"voice-{index}.opus").write_bytes(content)
             audio = connection.execute(
                 """INSERT INTO audio_files(stable_file_id, source_root_id, current_relative_path, basename,
                    normalized_basename, extension, size_bytes, first_discovered_at, last_seen_at, current_state,
-                   created_at, updated_at) VALUES (?, ?, ?, ?, ?, '.opus', 1, 't', 't', 'queued', 't', 't')""",
+                   created_at, updated_at) VALUES (?, ?, ?, ?, ?, '.opus', ?, 't', 't', 'queued', 't', 't')""",
                 (
                     f"audio-{index}",
                     root,
                     f"voice-{index}.opus",
                     f"voice-{index}.opus",
                     f"voice-{index}.opus",
+                    len(content),
                 ),
             ).lastrowid
             version = connection.execute(
-                "INSERT INTO audio_source_versions(audio_file_id, size_bytes, sha256, discovered_at) VALUES (?, 1, ?, 't')",
-                (audio, f"hash-{index}"),
+                "INSERT INTO audio_source_versions(audio_file_id, size_bytes, sha256, discovered_at) VALUES (?, ?, ?, 't')",
+                (audio, len(content), hashlib.sha256(content).hexdigest()),
             ).lastrowid
             connection.execute(
                 "UPDATE audio_files SET current_source_version_id = ? WHERE id = ?",
@@ -87,6 +93,30 @@ def test_model_loads_once_and_completes_each_file(database) -> None:
         == 2
     )
     worker.close()
+
+
+@pytest.mark.acceptance
+def test_restart_skips_completed_sources_with_zero_new_inference(database) -> None:
+    """The addendum's no-repeat proof: a second run must not call inference."""
+    path, connection = database
+    first_engine = FakeEngine()
+    first = WorkerLoop(path, "first-run", first_engine)
+    first.start()
+    while first.run_one():
+        pass
+    first.close()
+    attempts_before = connection.execute("SELECT COUNT(*) FROM transcription_attempts").fetchone()[0]
+
+    second_engine = FakeEngine()
+    second = WorkerLoop(path, "second-run", second_engine)
+    second.start()
+    assert second.run_one() is False
+    assert second_engine.transcribe_count == 0
+    assert connection.execute("SELECT COUNT(*) FROM transcription_attempts").fetchone()[0] == attempts_before
+    assert connection.execute(
+        "SELECT COUNT(*) FROM processing_events WHERE event_type='skipped_complete'"
+    ).fetchone()[0] == 2
+    second.close()
 
 
 def test_bad_file_fails_but_next_file_continues(database) -> None:
