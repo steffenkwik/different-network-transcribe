@@ -5,7 +5,7 @@
 "**Tested**" means an automated test exists **and was executed green**, with evidence recorded in §3. Code merely existing is never "Tested" (blueprint §27: *"do not claim completion based only on code existing"*).
 
 **App version:** 0.1.0
-**Last updated:** 2026-07-15 — packaging smoke tests complete; feature integration continues
+**Last updated:** 2026-07-16 — limited 20-file real-data verification in progress
 
 ---
 
@@ -26,7 +26,7 @@
 | 10 | Backup and migration | **Tested** | Temporary database package/restore tests |
 | 11 | Packaging | **Tested** | Portable and installer smoke tests pass |
 | 12 | GitHub workflows | Not started | — |
-| 13 | Limited real test (max 20) | Not started | — |
+| 13 | Limited real test (max 20) | In progress | §3.13 |
 | 14 | Final audit | Not started | — |
 
 ## 2. Definition of Done (blueprint §25) — every item tracked
@@ -405,6 +405,26 @@ files, and preserved the separately selected user-data folder. The installer is 
 This validates packaging only. Phase 9 remains in progress because the visible shell has not yet wired
 all scan, review, worker, export, and backup actions to the services. Phase 7 integration, GitHub
 automation, the limited real-data test, and the final audit also remain incomplete.
+
+### 3.13 — Phase 13 (in progress; restricted to 20 real files)
+
+The application completed a user-selected 20-file test batch. This agent did not start a corpus-wide
+run and did not read or upload transcript bodies. The local, aggregate-only verification recorded:
+
+```text
+database integrity_check              ok
+completed attempts                    20
+preferred completed records           20
+source SHA-256 checks                 20 checked; 0 mismatches
+second local worker session           0 new attempts; 20 skipped_complete events
+derived output files                  Markdown, TXT, CSV, JSONL present
+```
+
+The worker was restricted to the currently configured test root. Previously scanned records from
+another root remained queued but were not claimable by this session. Pending before Phase 13 can be
+marked tested: human spot-check of sender/chat/timestamp where chat exports are available, restart
+persistence in the installed UI, and post-upgrade export-audit verification. No test will exceed 20
+real source files.
 
 ## 4. Known gaps / blocked items
 
