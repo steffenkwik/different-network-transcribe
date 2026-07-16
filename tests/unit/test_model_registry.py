@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.transcription.model_registry import ModelError, ModelRegistry
+from app.transcription.model_registry import MODELS, ModelError, ModelRegistry
 
 pytestmark = [pytest.mark.unit]
 
@@ -55,3 +55,10 @@ def test_offline_import_accepts_verified_pack(tmp_path: Path) -> None:
             package.write(path, path.name)
     installed = ModelRegistry(tmp_path / "Models").import_zip("small", archive)
     assert (installed / "model.bin").read_text(encoding="utf-8") == "model.bin"
+
+
+def test_high_model_is_an_explicit_local_accuracy_option() -> None:
+    high = MODELS["high"]
+    assert high.hf_repo == "Systran/faster-whisper-large-v3"
+    assert high.expected_size_bytes > MODELS["medium"].expected_size_bytes
+    assert high.minimum_ram_bytes > MODELS["medium"].minimum_ram_bytes

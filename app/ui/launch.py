@@ -54,6 +54,8 @@ from app.services.application_service import ApplicationService, TestBatchSummar
 from app.services.chat_import_service import ChatScanSummary
 from app.services.discovery_service import ScanSummary
 from app.services.metadata_matching_service import MatchingSummary
+from app.transcription.model_registry import MODELS
+from app.ui.assets import brand_icon, install_brand_fonts
 from app.ui.brand import DifferentNetworkMark
 from app.ui.theme import APP_STYLESHEET
 from app.version import APP_NAME, APP_VERSION
@@ -164,6 +166,7 @@ class FirstRunWizard(QWizard):
         layout.addWidget(QLabel("Anda selalu memilih model lagi sebelum menekan Mulai."))
         layout.addWidget(QLabel(f"• {S.MODEL_SMALL_TITLE} — paling tepat untuk uji awal."))
         layout.addWidget(QLabel(f"• {S.MODEL_MEDIUM_TITLE} — untuk pemeriksaan yang lebih teliti."))
+        layout.addWidget(QLabel(f"• {S.MODEL_HIGH_TITLE} — untuk akurasi tertinggi dengan waktu dan RAM lebih besar."))
         layout.addWidget(QLabel("Unduh atau impor model secara eksplisit dari Pengaturan & Data. Audio tidak pernah dikirim ke cloud."))
         return page
 
@@ -222,13 +225,17 @@ class TranscriptionSetupDialog(QDialog):
         model_copy.addWidget(title)
         model_copy.addWidget(QLabel("Model dimuat sekali oleh worker dan tetap berada di komputer ini."))
         model_layout.addLayout(model_copy, 1)
-        self.small_model = self._model_radio("small", S.MODEL_SMALL_TITLE, "Cepat; direkomendasikan untuk mulai.")
-        self.medium_model = self._model_radio("medium", S.MODEL_MEDIUM_TITLE, "Lebih akurat; membutuhkan waktu lebih lama.")
+        self.model_buttons = {
+            "small": self._model_radio("small", S.MODEL_SMALL_TITLE, "Cepat; direkomendasikan untuk mulai."),
+            "medium": self._model_radio("medium", S.MODEL_MEDIUM_TITLE, "Lebih akurat; membutuhkan waktu lebih lama."),
+            "high": self._model_radio(
+                "high", S.MODEL_HIGH_TITLE, "Paling akurat; paling lambat dan membutuhkan RAM/disk lebih besar."
+            ),
+        }
         self.model_group = QButtonGroup(self)
-        self.model_group.addButton(self.small_model)
-        self.model_group.addButton(self.medium_model)
-        model_layout.addWidget(self.small_model)
-        model_layout.addWidget(self.medium_model)
+        for button in self.model_buttons.values():
+            self.model_group.addButton(button)
+            model_layout.addWidget(button)
         layout.addWidget(model_section)
 
         files_heading = QHBoxLayout()
@@ -306,12 +313,14 @@ class TranscriptionSetupDialog(QDialog):
 
     def _load_models(self) -> None:
         default = str(self.model_status.get("default_model", "small"))
-        preferred = self.small_model if default == "small" else self.medium_model
-        other = self.medium_model if preferred is self.small_model else self.small_model
-        if preferred.isEnabled():
+        preferred = self.model_buttons.get(default)
+        if preferred is not None and preferred.isEnabled():
             preferred.setChecked(True)
-        elif other.isEnabled():
-            other.setChecked(True)
+        else:
+            for button in self.model_buttons.values():
+                if button.isEnabled():
+                    button.setChecked(True)
+                    break
         self.model_group.buttonClicked.connect(self._update_start_state)
 
     def _load_candidates(self) -> None:
@@ -400,7 +409,7 @@ class TranscriptionSetupDialog(QDialog):
                 else f"Pilih maksimal {self.SAFE_BATCH_LIMIT} file untuk batch aman, atau gunakan opsi semua file dengan konfirmasi."
             )
         if not installed_model:
-            message = "Pasang Small atau Medium terlebih dahulu di Pengaturan & Data."
+            message = "Pasang Small, Medium, atau High terlebih dahulu di Pengaturan & Data."
         self.selection_count_label.setText("Semua file" if self.process_all.isChecked() else f"{selected} dipilih")
         self.validation_label.setText(message)
         self.start_button.setEnabled(allowed)
@@ -689,6 +698,7 @@ class MainWindow(QMainWindow):
         self.model_filter.addItem("Semua model", None)
         self.model_filter.addItem("Small", "small")
         self.model_filter.addItem("Medium", "medium")
+        self.model_filter.addItem("High", "high")
         self.model_filter.currentIndexChanged.connect(self._reset_paging)
         self.match_filter = QComboBox()
         self.match_filter.addItem("Semua metadata", None)
@@ -714,9 +724,19 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.sort_filter)
         layout.addLayout(controls)
         self.table = self._new_transcript_table()
+        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.itemDoubleClicked.connect(self._open_detail_from_item)
+        self.table.itemSelectionChanged.connect(self._update_history_action_state)
         layout.addWidget(self.table)
         pagination = QHBoxLayout()
+        self.delete_history_button = QPushButton("Hapus Riwayat Terpilih")
+        self.delete_history_button.setObjectName("dangerButton")
+        self.delete_history_button.setToolTip(
+            "Hapus transkrip dan koreksi pada baris terpilih. Audio serta chat sumber tidak dihapus."
+        )
+        self.delete_history_button.setEnabled(False)
+        self.delete_history_button.clicked.connect(self._clear_selected_history)
+        pagination.addWidget(self.delete_history_button)
         self.previous_page_button = QPushButton("Sebelumnya")
         self.previous_page_button.clicked.connect(self._previous_page)
         self.next_page_button = QPushButton("Berikutnya")
@@ -776,6 +796,7 @@ class MainWindow(QMainWindow):
             ]
         )
         table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         return table
 
@@ -907,6 +928,7 @@ class MainWindow(QMainWindow):
         )
 
     def _populate_table(self, table: QTableWidget, rows: list[Any]) -> None:
+        table.clearSelection()
         table.setRowCount(len(rows))
         for index, row in enumerate(rows):
             values = (
@@ -925,6 +947,49 @@ class MainWindow(QMainWindow):
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, int(row["id"]))
                 table.setItem(index, column, item)
+        if table is self.table:
+            self._update_history_action_state()
+
+    def _selected_audio_ids(self) -> list[int]:
+        ids: set[int] = set()
+        for index in self.table.selectionModel().selectedRows():
+            anchor = self.table.item(index.row(), 0)
+            if anchor is not None:
+                value = anchor.data(Qt.ItemDataRole.UserRole)
+                if isinstance(value, int):
+                    ids.add(value)
+        return sorted(ids)
+
+    def _update_history_action_state(self) -> None:
+        if hasattr(self, "delete_history_button"):
+            self.delete_history_button.setEnabled(bool(self._selected_audio_ids()))
+
+    def _clear_selected_history(self) -> None:
+        service = self._require_service()
+        if service is None:
+            return
+        audio_ids = self._selected_audio_ids()
+        if not audio_ids:
+            return
+        count = len(audio_ids)
+        confirmed = QMessageBox.question(
+            self,
+            APP_NAME,
+            f"Hapus riwayat transkripsi untuk {count} file terpilih?\n\n"
+            "Yang dihapus: transkrip, attempt, dan koreksi manual.\n"
+            "Yang tetap aman: file audio sumber, lokasi folder, fingerprint, dan metadata chat.\n\n"
+            "File tidak akan masuk antrean otomatis; pilih lagi saat ingin mentranskripsinya.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmed != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            removed = service.clear_transcript_history(audio_ids)
+            self._show_info(f"Riwayat dihapus untuk {removed} file. Audio sumber tidak diubah.")
+            self.refresh()
+        except (RuntimeError, ValueError) as exc:
+            self._show_error(exc)
 
     @staticmethod
     def _set_page_controls(
@@ -1208,7 +1273,8 @@ class MainWindow(QMainWindow):
         service = self._require_service()
         if service is None:
             return
-        key, accepted = QInputDialog.getItem(self, APP_NAME, "Pilih model default", ["small", "medium"], 0, False)
+        keys = list(MODELS)
+        key, accepted = QInputDialog.getItem(self, APP_NAME, "Pilih model default", keys, 0, False)
         if not accepted:
             return
         try:
@@ -1219,7 +1285,7 @@ class MainWindow(QMainWindow):
             self._show_error(exc)
 
     def _model_key(self, title: str) -> str | None:
-        key, accepted = QInputDialog.getItem(self, APP_NAME, title, ["small", "medium"], 0, False)
+        key, accepted = QInputDialog.getItem(self, APP_NAME, title, list(MODELS), 0, False)
         return key if accepted else None
 
     def _download_model(self) -> None:
@@ -1473,6 +1539,8 @@ def run_ui(data_dir: Path | None = None, self_test: bool = False) -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
+    install_brand_fonts()
+    app.setWindowIcon(brand_icon())
     app.setStyleSheet(APP_STYLESHEET)
     if first_run and not self_test:
         wizard = FirstRunWizard(paths)

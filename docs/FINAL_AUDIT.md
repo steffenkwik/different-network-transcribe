@@ -8,6 +8,10 @@
 
 The build candidate is ready to commit and push. Its installer and portable ZIP were rebuilt from the current source and smoke-tested. The 20-file local test remains the only real-data execution recorded; there is no corpus-wide transcription.
 
+## v0.2.0 addendum
+
+The versioned build adds official DN Academy branding (logo, palette, and licensed typography), an opt-in local High model, and safe multi-row transcript-history deletion. `143` synthetic tests, ruff, mypy, private-data release scanning, and portable/installer smoke tests passed. The public GitHub release is published by the `v0.2.0` tag workflow.
+
 ## Passed requirements
 
 | Area | Result | Evidence |
@@ -27,7 +31,7 @@ The build candidate is ready to commit and push. Its installer and portable ZIP 
 ## Local evidence
 
 ```text
-137 automated synthetic tests passed
+143 automated synthetic tests passed
 ruff and mypy passed
 staged source private-data scan passed (109 files)
 release private-data scan passed
@@ -46,4 +50,4 @@ installer smoke test passed (install + UI self-test + uninstall/data preservatio
 
 **Local build gate: PASS.**
 **Remote CI gate: PASS.**
-**Release-asset publication: awaiting an explicit version tag/release decision.**
+**Release-asset publication: next step is tag `v0.2.0`.**

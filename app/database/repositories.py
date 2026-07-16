@@ -283,6 +283,83 @@ class TranscriptRepository:
         ).fetchone()
 
 
+class TranscriptHistoryRepository:
+    """Explicit, destructive transcript-history operations.
+
+    This intentionally removes only derived transcript data.  Audio files, their
+    paths, fingerprints, chat metadata, and source folders remain untouched.  A
+    cleared record is disabled so it cannot accidentally enter a future queue;
+    the user explicitly selects it again from the preflight dialog.
+    """
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+
+    def clear_selected(self, audio_file_ids: list[int]) -> int:
+        selected = sorted(set(audio_file_ids))
+        if not selected:
+            return 0
+        placeholders = ",".join("?" for _ in selected)
+        stamp = now()
+        with transaction(self.connection, immediate=True):
+            existing = self.connection.execute(
+                f"SELECT id FROM audio_files WHERE id IN ({placeholders})", selected
+            ).fetchall()
+            ids = [int(row["id"]) for row in existing]
+            if not ids:
+                return 0
+            ids_placeholders = ",".join("?" for _ in ids)
+            self.connection.execute(
+                f"""UPDATE audio_files
+                       SET preferred_transcript_id = NULL,
+                           preferred_manual_transcript_id = NULL,
+                           transcription_enabled = 0,
+                           current_state = CASE
+                               WHEN readable = 1 AND zero_byte = 0
+                                    AND current_source_version_id IS NOT NULL THEN 'discovered'
+                               ELSE current_state
+                           END,
+                           updated_at = ?
+                     WHERE id IN ({ids_placeholders})""",
+                [stamp, *ids],
+            )
+            # Manual rows reference attempts, therefore they must go first.
+            self.connection.execute(
+                f"DELETE FROM manual_transcripts WHERE audio_file_id IN ({ids_placeholders})", ids
+            )
+            self.connection.execute(
+                f"DELETE FROM transcription_attempts WHERE audio_file_id IN ({ids_placeholders})", ids
+            )
+            # This is a contentless FTS5 table, so SQLite does not support a
+            # normal row DELETE. Rebuild from the authoritative preferred rows
+            # after the small destructive operation instead.
+            self.connection.execute("INSERT INTO transcript_fts(transcript_fts) VALUES ('delete-all')")
+            self.connection.execute("DELETE FROM transcript_fts_map")
+            self.connection.execute(
+                """INSERT INTO transcript_fts(rowid, text)
+                   SELECT a.id, COALESCE(mt.text, t.normalized_transcript, t.raw_transcript)
+                     FROM audio_files AS a
+                     JOIN transcription_attempts AS t ON t.id = a.preferred_transcript_id
+                     LEFT JOIN manual_transcripts AS mt ON mt.id = a.preferred_manual_transcript_id
+                    WHERE t.state = 'completed'
+                      AND COALESCE(mt.text, t.normalized_transcript, t.raw_transcript) IS NOT NULL"""
+            )
+            self.connection.execute(
+                """INSERT INTO transcript_fts_map(rowid, audio_file_id)
+                   SELECT a.id, a.id
+                     FROM audio_files AS a
+                     JOIN transcription_attempts AS t ON t.id = a.preferred_transcript_id
+                    WHERE t.state = 'completed'
+                      AND COALESCE(t.normalized_transcript, t.raw_transcript) IS NOT NULL"""
+            )
+            self.connection.executemany(
+                """INSERT INTO processing_events(audio_file_id, event_type, event_at, details_json)
+                   VALUES (?, 'history_cleared', ?, '{\"scope\":\"transcript_history\"}')""",
+                [(audio_id, stamp) for audio_id in ids],
+            )
+        return len(ids)
+
+
 def _safe_fts_query(value: str) -> str:
     """Turn free-form UI input into literal FTS terms, not FTS syntax."""
     return " ".join(re.findall(r"\w+", value, flags=re.UNICODE))

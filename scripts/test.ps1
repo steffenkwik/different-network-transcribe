@@ -35,7 +35,11 @@ $markers = "not realdata"
 if ($Fast)       { $markers = "not realdata and not slow and not realmodel" }
 if ($Acceptance) { $markers = "acceptance and not realdata" }
 
-& $python -m pytest -m $markers --basetemp "$repo\.test-tmp" -p no:cacheprovider
+# A unique user-temp root avoids Windows handles left by a previous GUI/worker
+# test. Keeping it outside the repository also prevents a locked test folder
+# from making every subsequent quality gate fail before tests can run.
+$testTemp = Join-Path $env:TEMP ("dnt-tests-" + [guid]::NewGuid().ToString("N"))
+& $python -m pytest -m $markers --basetemp $testTemp -p no:cacheprovider
 if ($LASTEXITCODE -ne 0) { throw "pytest gagal" }
 
 Write-Host "== private-data scan ==" -ForegroundColor Cyan

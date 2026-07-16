@@ -21,15 +21,16 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.transcription.model_packaging import build_model_pack  # noqa: E402
+from app.transcription.model_registry import MODELS  # noqa: E402
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Buat paket model offline.")
     parser.add_argument("--models-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=Path("release"))
-    parser.add_argument("--model", choices=("small", "medium"), action="append")
+    parser.add_argument("--model", choices=tuple(MODELS), action="append")
     args = parser.parse_args()
-    for key in args.model or ["small", "medium"]:
+    for key in args.model or list(MODELS):
         pack = build_model_pack(args.models_dir, key, args.output_dir)
         print(pack)
     return 0

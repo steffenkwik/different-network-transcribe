@@ -16,6 +16,7 @@ from app.backup.backup_service import BackupService
 from app.database.connection import open_connection, transaction
 from app.database.migrations import MigrationRunner
 from app.database.repositories import (
+    TranscriptHistoryRepository,
     TranscriptionCandidatePage,
     TranscriptionSelectionRepository,
     TranscriptListPage,
@@ -488,6 +489,21 @@ class ApplicationService:
     def reprocess_transcript(self, audio_file_id: int) -> int | None:
         """Ask the active worker to create a new attempt; history stays immutable."""
         return self._worker_control().reprocess_selected([audio_file_id])
+
+    def clear_transcript_history(self, audio_file_ids: list[int]) -> int:
+        """Forget selected derived transcripts while preserving source evidence.
+
+        Clearing history during an active worker would race its per-file commit,
+        so the user must pause/stop it first.  This never alters source audio or
+        chat exports and leaves cleared files disabled until explicitly selected.
+        """
+        if self.transcription_state() is not None:
+            raise RuntimeError("Jeda atau Berhenti Aman transkripsi sebelum menghapus riwayat.")
+        connection = open_connection(self.paths.database_file)
+        try:
+            return TranscriptHistoryRepository(connection).clear_selected(audio_file_ids)
+        finally:
+            connection.close()
 
     def _worker_control(self) -> WorkerControlService:
         return WorkerControlService(self.paths.database_file, self.paths.root)

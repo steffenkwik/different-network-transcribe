@@ -105,4 +105,5 @@ def test_branded_navigation_and_preflight_are_present(qtbot, tmp_path: Path) -> 
     dialog = TranscriptionSetupDialog(service, window)
     qtbot.addWidget(dialog)
     assert dialog.windowTitle() == "Siapkan Transkripsi"
+    assert "high" in dialog.model_buttons
     assert dialog.start_button.isEnabled() is False

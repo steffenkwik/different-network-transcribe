@@ -72,7 +72,7 @@ Full lock: `requirements-lock.txt` (generated from a clean venv).
 - **PyInstaller one-folder** (`--onedir`), not one-file. One-file unpacks a ~1 GB tree to `%TEMP%` on every launch; one-folder is what the blueprint specifies and is predictable with native DLLs (CTranslate2, Qt, PyAV).
 - **Single executable, two roles.** The UI and the worker ship as one `DifferentNetworkTranscribe.exe`. The worker is launched as `sys.executable --worker --data-dir <path> --session <token>`. Rationale: a second PyInstaller entry point would duplicate the entire Qt/CTranslate2 payload. In dev, the same code path launches `python -m worker.main`. This is defined precisely in `WORKER_IPC_CONTRACT.md` §3.
 - **Models are never bundled into the repo or the standard installer.** They are GitHub Release assets and/or downloaded on first run (blueprint §17.3, addendum §6.8).
-- Artifacts per release: `DifferentNetworkTranscribe-Setup-x64.exe`, `DifferentNetworkTranscribe-Portable-x64.zip`, `DifferentNetworkTranscribe-Model-Small.zip`, `DifferentNetworkTranscribe-Model-Medium.zip`, `SHA256SUMS.txt`.
+- Artifacts per release: `DifferentNetworkTranscribe-Setup-x64.exe`, `DifferentNetworkTranscribe-Portable-x64.zip`, `DifferentNetworkTranscribe-Model-Small.zip`, `DifferentNetworkTranscribe-Model-Medium.zip`, `DifferentNetworkTranscribe-Model-High.zip`, `SHA256SUMS.txt`.
 
 ## 5. Repository layout (per blueprint §17.2)
 

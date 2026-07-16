@@ -68,9 +68,9 @@ class TranscriptionConfig:
         return resolve_cpu_threads(self.cpu_preset)
 
     def validate(self) -> None:
-        if self.default_model not in ("small", "medium"):
+        if self.default_model not in ("small", "medium", "high"):
             raise ConfigError(f"default_model tidak dikenal: {self.default_model}")
-        if self.review_model not in ("small", "medium"):
+        if self.review_model not in ("small", "medium", "high"):
             raise ConfigError(f"review_model tidak dikenal: {self.review_model}")
         if self.task != "transcribe":
             # Blueprint 7.1: task 'transcribe', never 'translate'.

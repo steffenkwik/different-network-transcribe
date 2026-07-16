@@ -1,6 +1,6 @@
 # Implementation Status
 
-**App version:** 0.1.0
+**App version:** 0.2.0
 **Updated:** 2026-07-16 — post-audit Different Network UX refresh; remote CI verified
 **Evidence convention:** `Tested` means an automated gate or explicitly recorded limited local test has passed. `Implemented` means the code/workflow exists but needs an external publication or CI action.
 
@@ -17,7 +17,7 @@
 | 6 | Local worker and model registry | Tested | Lease, command, local model, failure isolation, heartbeat tests |
 | 7 | No-repeat and recovery | Tested | Second synthetic session: zero inference/new attempts; explicit-only reprocess |
 | 8 | Atomic exporters | Tested | Markdown/TXT/CSV/JSONL, deterministic rebuild, output regeneration |
-| 9 | Indonesian PySide6 UI | Tested | Branded black/yellow/orange desktop UI; wizard, four sections, pagination, filter, review/detail/edit/playback, model-and-file preflight tests |
+| 9 | Indonesian PySide6 UI | Tested | Official DN logo, DN black/orange/chilli system, Academy typography, High model choice, multi-row safe history deletion, wizard, four sections, pagination, filters, review/detail/edit/playback |
 | 10 | Backup, restore, diagnostic bundle | Tested | SQLite backup API, staging restore, manifest/audit and privacy tests |
 | 11 | Windows packaging | Tested | Fresh installer + portable build and Python-free smoke test |
 | 12 | CI/release workflows and privacy scan | Tested | GitHub Actions quality gate and Windows build-smoke passed for commit `44bd0f9` |
@@ -28,8 +28,8 @@
 
 ```text
 ruff check app worker tests scripts    PASS
-mypy app worker                        PASS (45 source files)
-pytest -m "not realdata"                PASS (137 tests)
+mypy app worker                        PASS (46 source files)
+pytest -m "not realdata"                PASS (143 tests)
 private-data scan, staged source       PASS (current staged source)
 private-data scan, release directory   PASS (3 release artifacts)
 ```
@@ -39,8 +39,8 @@ No real corpus run occurred during this final gate. All tests used synthetic fix
 ## Packaging evidence
 
 ```text
-portable ZIP SHA-256     FBCBF5A16663CC4B0EA8FE90CC15FA5CE7EB927211846240DCFF3D4E4024F4B5
-installer SHA-256        F4227548BB496F613F222EDAEDA6F007DAE82BE8F6EA0040BEFD7CBDD9770BB6
+portable ZIP v0.2.0 SHA-256     4465A00848D234896A5F94188ADDFC8F1668C564D0C0F822FCA36AFFF9255104
+installer v0.2.0 SHA-256        4020B13CCA12DE5F1667EBB820B18AEA68327E4CA0C3D7FD6C8E90BEF7919DAD
 ```
 
 The refreshed clean smoke test passed the portable and installer launch paths:
@@ -79,3 +79,12 @@ derived formats                Markdown, TXT, CSV, JSONL present
 - `docs/BRAND_GUIDELINES.md` is the visual source of truth: black-dominant surfaces, accessible yellow primary action, orange controlled-attention action, and native vector DN product mark.
 - **Siapkan & Mulai Transkripsi** now opens a preflight dialog. It requires a locally installed Small/Medium choice, exposes a bounded file checklist, persists exclusions, and defaults to a batch of at most 20 files.
 - Processing an entire incomplete collection remains possible only after a separate bulk opt-in and acknowledgement. A restart, re-scan, or settings change cannot silently re-enable excluded files.
+
+## v0.2.0 DN identity and control update
+
+- The app, installer, and desktop shortcut use the official DN Academy logo.
+- The visual system uses DN black, primary orange `#FF4D00`, and chilli red-orange `#FF2D1A`; Archivo, JetBrains Mono, and Chakra Petch are bundled under their OFL licenses.
+- High (`Systran/faster-whisper-large-v3`) is an explicit local option. It is never downloaded automatically and is clearly labelled as slower and RAM/disk intensive.
+- **Hapus Riwayat Terpilih** requires Ctrl/Shift row selection and confirmation. It preserves audio, paths, source fingerprints, and chat metadata, and leaves cleared files disabled until selected again.
+- The test runner now uses a fresh user-temp directory per run, avoiding stale Windows file locks.
+- v0.2.0 portable/installer package smoke test passed with Python absent from `PATH`; both build assets contain the DN logo and bundled Academy fonts.

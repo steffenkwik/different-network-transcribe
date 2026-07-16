@@ -12,9 +12,14 @@ metadata yang ambigu tetap masuk ke **Perlu Diperiksa**, bukan ditebak.
 
 ## Model dan privasi
 
-Small adalah pilihan awal yang disarankan. Medium lebih akurat namun lebih lambat. Model hanya diunduh ketika
-Anda meminta; audio tidak pernah diunggah. Perubahan model default berlaku untuk file baru/pending, bukan file
-yang sudah selesai.
+Small adalah pilihan awal yang disarankan. Medium lebih akurat namun lebih lambat. High adalah pilihan lokal
+paling akurat, tetapi paling lambat dan membutuhkan unduhan sekitar 3,1 GB serta RAM sekitar 5 GB. Model hanya
+diunduh ketika Anda meminta; audio tidak pernah diunggah. Perubahan model default berlaku untuk file baru/pending,
+bukan file yang sudah selesai.
+
+Untuk menghapus hasil yang tidak ingin disimpan, buka **Semua Transkrip**, pilih baris dengan Ctrl atau Shift, lalu
+klik **Hapus Riwayat Terpilih**. Audio sumber, chat, dan fingerprint tidak akan dihapus. File yang riwayatnya
+dihapus tidak masuk antrean lagi sampai Anda memilihnya sendiri pada dialog persiapan transkripsi.
 
 ## Proses dan hasil
 

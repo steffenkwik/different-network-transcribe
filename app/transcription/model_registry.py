@@ -38,6 +38,13 @@ MODELS = {
         1_527_000_000,
         2_684_354_560,
     ),
+    "high": ModelDefinition(
+        "high",
+        "High — Paling akurat, paling lambat",
+        "Systran/faster-whisper-large-v3",
+        3_100_000_000,
+        5_368_709_120,
+    ),
 }
 REQUIRED_FILES = frozenset({"config.json", "model.bin", "tokenizer.json", "vocabulary.txt"})
 Downloader = Callable[[str, Path], None]

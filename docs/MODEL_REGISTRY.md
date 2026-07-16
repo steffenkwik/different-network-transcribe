@@ -6,14 +6,15 @@ Implements `TECHNICAL_ADDENDUM.md` §6 and §26 deliverable 4.
 
 ## 1. Catalog (built into the app, version-controlled)
 
-Only two models are exposed to the user (blueprint §4.2 step 4). Both are CTranslate2 conversions published by SYSTRAN, the maintainers of faster-whisper.
+Three locally-run models are exposed to the user. All are CTranslate2 conversions published by SYSTRAN, the maintainers of faster-whisper. The High option is intentionally opt-in: it prioritizes accuracy and needs materially more disk, RAM, and processing time.
 
 | Key | UI name | HF repo | Approx. download | Approx. RAM (int8) |
 |---|---|---|---|---|
 | `small` | **Small — Cepat, direkomendasikan** | `Systran/faster-whisper-small` | ~480 MB | ~1.0 GB |
 | `medium` | **Medium — Lebih akurat, lebih lambat** | `Systran/faster-whisper-medium` | ~1.5 GB | ~2.6 GB |
+| `high` | **High — Paling akurat, paling lambat** | `Systran/faster-whisper-large-v3` | ~3.1 GB | ~5.0 GB |
 
-Default: `small`. Medium is **never downloaded silently** (addendum §6.1).
+Default: `small`. Medium and High are **never downloaded silently** (addendum §6.1).
 
 The catalog also carries the required artifact file list per model:
 `config.json`, `model.bin`, `tokenizer.json`, `vocabulary.txt` (plus `preprocessor_config.json` when present).
@@ -72,6 +73,21 @@ The catalog also carries the required artifact file list per model:
       "last_verified_at": null,
       "model_artifact_hash": null,
       "manifest": {}
+    },
+    "high": {
+      "display_name": "High — Paling akurat, paling lambat",
+      "engine_model_id": "high",
+      "hf_repo": "Systran/faster-whisper-large-v3",
+      "local_folder": "high",
+      "expected_size_bytes": 3100000000,
+      "min_ram_recommendation_bytes": 5368709120,
+      "installed": false,
+      "install_source": null,
+      "installed_at": null,
+      "verification_state": "not_installed",
+      "last_verified_at": null,
+      "model_artifact_hash": null,
+      "manifest": {}
     }
   }
 }
@@ -86,7 +102,7 @@ The catalog also carries the required artifact file list per model:
 | `verification_state` | `not_installed` · `partial` · `verified` · `corrupt` |
 | `model_artifact_hash` | **SHA-256 of `model.bin`.** This is the value that enters the transcript compatibility key. |
 | `manifest` | Per-file size + SHA-256, computed locally at install. This is what "verify" re-checks. |
-| `min_ram_recommendation_bytes` | Used to warn (not block) before selecting Medium on a low-RAM machine. |
+| `min_ram_recommendation_bytes` | Used to warn (not block) before selecting Medium or High on a low-RAM machine. |
 
 ## 4. Installation procedure (addendum §6.1–§6.7)
 
@@ -124,9 +140,9 @@ This is the path used on a machine with no internet, and it is why the release s
 ## 6. Git and release rules
 
 - **Model weights are never committed to git** (blueprint §17.1, addendum §6.8). `Models/` is in `.gitignore`.
-- Models are distributed as GitHub **Release assets**: `DifferentNetworkTranscribe-Model-Small.zip`, `DifferentNetworkTranscribe-Model-Medium.zip`.
+- Models are distributed as GitHub **Release assets**: `DifferentNetworkTranscribe-Model-Small.zip`, `DifferentNetworkTranscribe-Model-Medium.zip`, `DifferentNetworkTranscribe-Model-High.zip`.
 - The release workflow fails if any asset ≥ 2 GiB (GitHub release-asset limit) or if any single git object ≥ 100 MiB.
-- Medium ships only as a separate model pack, never inside the standard installer, because app + Medium approaches the release-asset limit (blueprint §18).
+- Medium and High ship only as separate model packs, never inside the standard installer, because they are too large for a predictable first install.
 
 ## 7. Interaction with the compatibility key
 

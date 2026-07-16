@@ -54,7 +54,7 @@ def atomic_write(path: Path, content: bytes) -> str:
 
 class ExportService:
     def __init__(
-        self, connection: sqlite3.Connection, output_dir: Path, *, app_version: str = "0.1.0"
+        self, connection: sqlite3.Connection, output_dir: Path, *, app_version: str = "0.2.0"
     ) -> None:
         self.connection = connection
         self.output_dir = output_dir

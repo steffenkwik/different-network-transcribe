@@ -38,7 +38,10 @@ function Test-Portable {
     $root = Join-Path $env:TEMP ("dnt-portable-smoke-" + [guid]::NewGuid().ToString("N"))
     $data = Join-Path $root "UserData"
     New-Item -ItemType Directory -Path $root,$data -Force | Out-Null
-    Expand-Archive -LiteralPath "release\DifferentNetworkTranscribe-Portable-x64.zip" -DestinationPath $root -Force
+    $portable = Get-ChildItem "release\DifferentNetworkTranscribe-Portable-x64-v*.zip" |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($null -eq $portable) { throw "Portable ZIP versi tidak ditemukan." }
+    Expand-Archive -LiteralPath $portable.FullName -DestinationPath $root -Force
     $exe = Get-ChildItem -LiteralPath $root -Filter "DifferentNetworkTranscribe.exe" -Recurse | Select-Object -First 1
     if ($null -eq $exe) { throw "Portable ZIP tidak berisi executable." }
     Start-DntProcess $exe.FullName "--engine-import-self-test" $true
@@ -55,7 +58,10 @@ function Test-Installer {
     $data = Join-Path $root "UserData"
     $log = Join-Path $root "setup.log"
     New-Item -ItemType Directory -Path $root,$data -Force | Out-Null
-    $setup = (Resolve-Path "release\DifferentNetworkTranscribe-Setup-x64.exe").Path
+    $installer = Get-ChildItem "release\DifferentNetworkTranscribe-Setup-x64-v*.exe" |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($null -eq $installer) { throw "Installer versi tidak ditemukan." }
+    $setup = $installer.FullName
     Start-DntProcess $setup ('/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR="' + $application + '" /LOG="' + $log + '"') $false
     $exe = Join-Path $application "DifferentNetworkTranscribe.exe"
     if (-not (Test-Path -LiteralPath $exe) -or -not (Test-Path -LiteralPath $log)) {

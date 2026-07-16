@@ -1,5 +1,5 @@
 #define MyAppName "Different Network Transcribe"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.0"
 #define MyAppExeName "DifferentNetworkTranscribe.exe"
 
 [Setup]
@@ -14,11 +14,13 @@ PrivilegesRequired=lowest
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\release
-OutputBaseFilename=DifferentNetworkTranscribe-Setup-x64
+OutputBaseFilename=DifferentNetworkTranscribe-Setup-x64-v{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#MyAppName}
+SetupIconFile=..\assets\brand\dn-favicon.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Files]
 Source: "..\dist\DifferentNetworkTranscribe\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

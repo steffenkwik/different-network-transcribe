@@ -12,10 +12,13 @@ $migrationFiles = Get-ChildItem "$repo\migrations" -Filter "*.sql" -File
 if ($migrationFiles.Count -eq 0) { throw "Tidak ada berkas migrasi SQL untuk dibundel." }
 $pyInstallerArgs = @(
     "--noconfirm", "--clean", "--windowed", "--onedir", "--name", "DifferentNetworkTranscribe",
+    "--icon", "$repo\assets\brand\dn-favicon.ico",
     "--specpath", "$repo\build\spec",
     "--collect-all", "numpy", "--collect-all", "faster_whisper", "--collect-all", "ctranslate2",
     "--collect-all", "av", "--collect-all", "PySide6"
 )
+$pyInstallerArgs += "--add-data"
+$pyInstallerArgs += "$repo\assets;assets"
 foreach ($migration in $migrationFiles) {
     # Add each SQL file explicitly. Passing the directory proved unreliable in
     # the frozen one-folder layout and resulted in an empty migrations folder.
@@ -32,7 +35,10 @@ if (-not (Test-Path $iscc)) { throw "Inno Setup tidak ditemukan" }
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup gagal" }
 
 New-Item -ItemType Directory -Force release | Out-Null
-Compress-Archive -Path dist\DifferentNetworkTranscribe\* -DestinationPath release\DifferentNetworkTranscribe-Portable-x64.zip -Force
+$version = & $python -c "from app.version import APP_VERSION; print(APP_VERSION)"
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) { throw "Versi aplikasi tidak dapat dibaca." }
+$portableArtifact = "release\DifferentNetworkTranscribe-Portable-x64-v$version.zip"
+Compress-Archive -Path dist\DifferentNetworkTranscribe\* -DestinationPath $portableArtifact -Force
 $hashLines = @(
     Get-ChildItem release -File |
         Where-Object { $_.Name -ne "SHA256SUMS.txt" } |

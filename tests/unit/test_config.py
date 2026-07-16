@@ -132,3 +132,10 @@ def test_config_from_newer_schema_is_rejected() -> None:
     cfg = AppConfig(schema_version=99)
     with pytest.raises(ConfigError):
         cfg.validate()
+
+
+def test_high_model_is_a_valid_explicit_choice() -> None:
+    cfg = AppConfig()
+    cfg.transcription.default_model = "high"
+    cfg.transcription.review_model = "high"
+    cfg.validate()
