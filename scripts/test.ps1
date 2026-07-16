@@ -35,7 +35,7 @@ $markers = "not realdata"
 if ($Fast)       { $markers = "not realdata and not slow and not realmodel" }
 if ($Acceptance) { $markers = "acceptance and not realdata" }
 
-& $python -m pytest -m $markers
+& $python -m pytest -m $markers --basetemp "$repo\.test-tmp" -p no:cacheprovider
 if ($LASTEXITCODE -ne 0) { throw "pytest gagal" }
 
 Write-Host "== private-data scan ==" -ForegroundColor Cyan

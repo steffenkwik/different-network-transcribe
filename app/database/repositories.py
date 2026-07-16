@@ -29,6 +29,14 @@ class TranscriptListPage:
     total: int
 
 
+@dataclass(frozen=True)
+class TranscriptionCandidatePage:
+    """A bounded, body-free file list for the pre-transcription dialog."""
+
+    rows: list[sqlite3.Row]
+    total: int
+
+
 class SettingsRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.connection = connection
@@ -49,6 +57,112 @@ class SettingsRepository:
             "SELECT value_json FROM settings WHERE key = ?", (key,)
         ).fetchone()
         return None if row is None else str(row["value_json"])
+
+
+class TranscriptionSelectionRepository:
+    """Persist the user's explicit inclusion/exclusion of future audio work."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+
+    def candidates(self, source_root: Path | None, *, limit: int = 250, offset: int = 0) -> TranscriptionCandidatePage:
+        if source_root is None:
+            return TranscriptionCandidatePage(rows=[], total=0)
+        root = str(source_root.resolve())
+        where = """
+            s.original_path = ?
+            AND a.readable = 1 AND a.zero_byte = 0 AND a.current_source_version_id IS NOT NULL
+            AND a.current_state NOT IN ('completed_preferred', 'verified', 'failed', 'no_speech', 'missing_source')
+        """
+        total = int(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM audio_files a JOIN source_roots s ON s.id = a.source_root_id WHERE " + where,
+                (root,),
+            ).fetchone()[0]
+        )
+        rows = self.connection.execute(
+            """SELECT a.id, a.basename, a.current_relative_path, a.duration_seconds,
+                      a.current_state, a.transcription_enabled
+                 FROM audio_files a JOIN source_roots s ON s.id = a.source_root_id
+                WHERE """ + where + " ORDER BY a.normalized_basename, a.id LIMIT ? OFFSET ?",
+            (root, limit, offset),
+        ).fetchall()
+        return TranscriptionCandidatePage(rows=rows, total=total)
+
+    def set_enabled(self, source_root: Path, audio_file_ids: list[int], *, enabled: bool) -> int:
+        selected = sorted(set(audio_file_ids))
+        if not selected:
+            return 0
+        root = str(source_root.resolve())
+        placeholders = ",".join("?" for _ in selected)
+        with transaction(self.connection, immediate=True):
+            updated = self.connection.execute(
+                f"""UPDATE audio_files
+                    SET transcription_enabled = ?,
+                        current_state = CASE
+                            WHEN ? = 0 AND current_state NOT IN ('completed_preferred', 'verified', 'processing') THEN 'excluded'
+                            WHEN ? = 1 AND current_state = 'excluded' THEN 'discovered'
+                            ELSE current_state
+                        END,
+                        updated_at = ?
+                    WHERE id IN ({placeholders})
+                      AND source_root_id = (SELECT id FROM source_roots WHERE original_path = ?)
+                      AND current_state != 'processing'""",
+                [int(enabled), int(enabled), int(enabled), now(), *selected, root],
+            )
+        return updated.rowcount
+
+    def replace_with(self, source_root: Path, selected_audio_file_ids: list[int]) -> int:
+        """Make a deliberate small batch the only enabled incomplete work.
+
+        This is used by the beginner-safe preflight: selecting a few files must
+        never leave thousands of previously-default-enabled files ready by
+        accident. Completed and currently processing rows are never altered.
+        """
+        root = str(source_root.resolve())
+        selected = sorted(set(selected_audio_file_ids))
+        candidate_where = """
+            source_root_id = (SELECT id FROM source_roots WHERE original_path = ?)
+            AND readable = 1 AND zero_byte = 0 AND current_source_version_id IS NOT NULL
+            AND current_state NOT IN ('completed_preferred', 'verified', 'failed', 'no_speech', 'missing_source', 'processing')
+        """
+        with transaction(self.connection, immediate=True):
+            self.connection.execute(
+                "UPDATE audio_files SET transcription_enabled = 0, current_state = 'excluded', updated_at = ? WHERE "
+                + candidate_where,
+                (now(), root),
+            )
+            if not selected:
+                return 0
+            placeholders = ",".join("?" for _ in selected)
+            cursor = self.connection.execute(
+                f"""UPDATE audio_files SET transcription_enabled = 1,
+                           current_state = CASE WHEN current_state = 'excluded' THEN 'discovered' ELSE current_state END,
+                           updated_at = ?
+                    WHERE id IN ({placeholders}) AND """ + candidate_where,
+                [now(), *selected, root],
+            )
+        return cursor.rowcount
+
+    def set_all_enabled(self, source_root: Path, *, enabled: bool) -> int:
+        """Explicit bulk opt-in/out for users who intentionally want a full run."""
+        root = str(source_root.resolve())
+        with transaction(self.connection, immediate=True):
+            cursor = self.connection.execute(
+                """UPDATE audio_files
+                       SET transcription_enabled = ?,
+                           current_state = CASE
+                               WHEN ? = 0 AND current_state NOT IN ('completed_preferred', 'verified', 'processing') THEN 'excluded'
+                               WHEN ? = 1 AND current_state = 'excluded' THEN 'discovered'
+                               ELSE current_state
+                           END,
+                           updated_at = ?
+                     WHERE source_root_id = (SELECT id FROM source_roots WHERE original_path = ?)
+                       AND readable = 1 AND zero_byte = 0 AND current_source_version_id IS NOT NULL
+                       AND current_state NOT IN ('completed_preferred', 'verified', 'failed', 'no_speech', 'missing_source', 'processing')""",
+                (int(enabled), int(enabled), int(enabled), now(), root),
+            )
+        return cursor.rowcount
 
 
 class TranscriptRepository:

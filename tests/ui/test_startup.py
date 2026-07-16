@@ -87,3 +87,22 @@ def test_safe_twenty_file_test_action_is_available(qtbot) -> None:
     qtbot.addWidget(window)
     assert window.test_button.isEnabled()
     assert "20" in window.test_button.toolTip()
+
+
+def test_branded_navigation_and_preflight_are_present(qtbot, tmp_path: Path) -> None:
+    """The DN treatment and safe model/file preflight are deliberate UI contracts."""
+    from app.services.application_service import ApplicationService
+    from app.ui.launch import MainWindow, TranscriptionSetupDialog
+
+    paths = DataPaths(tmp_path / "data")
+    paths.ensure()
+    service = ApplicationService(paths)
+    service.ensure_database()
+    window = MainWindow(paths=paths, service=service)
+    qtbot.addWidget(window)
+    assert len(window._nav_buttons) == 4
+    assert window._nav_buttons[0].isChecked()
+    dialog = TranscriptionSetupDialog(service, window)
+    qtbot.addWidget(dialog)
+    assert dialog.windowTitle() == "Siapkan Transkripsi"
+    assert dialog.start_button.isEnabled() is False

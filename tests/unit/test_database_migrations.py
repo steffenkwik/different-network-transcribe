@@ -109,12 +109,13 @@ def test_initial_migration_creates_every_required_table(migrated_database: Path)
             "transcript_fts_map",
         }
         assert expected <= _tables(connection)
-        assert connection.execute("SELECT COUNT(*) FROM app_schema_migrations").fetchone()[0] == 4
+        assert connection.execute("SELECT COUNT(*) FROM app_schema_migrations").fetchone()[0] == 5
         columns = {
             str(row["name"])
             for row in connection.execute("PRAGMA table_info(audio_files)")
         }
         assert "preferred_manual_transcript_id" in columns
+        assert "transcription_enabled" in columns
         assert quick_check(connection) == "ok"
     finally:
         connection.close()
@@ -125,7 +126,7 @@ def test_migration_is_idempotent_and_backs_up_existing_schema(
 ) -> None:
     database_file, backups_dir = database_paths
     runner = MigrationRunner(database_file, MIGRATIONS, backups_dir)
-    assert [item.version for item in runner.migrate()] == [1, 2, 3, 4]
+    assert [item.version for item in runner.migrate()] == [1, 2, 3, 4, 5]
     assert runner.migrate() == []
     # Simulate a future database at 0001 and prove the runner snapshots it
     # before applying the pending 0002 migration.

@@ -35,7 +35,7 @@ class QueueService:
     def prepare(self) -> QueuePreparation:
         rows = self.connection.execute(
             """
-            SELECT a.id, a.current_state, a.current_relative_path, a.current_source_version_id, s.original_path,
+            SELECT a.id, a.current_state, a.transcription_enabled, a.current_relative_path, a.current_source_version_id, s.original_path,
                    v.sha256 AS stored_sha256,
                    t.id AS preferred_attempt_id, t.state AS preferred_state,
                    t.source_version_id AS preferred_source_version_id,
@@ -52,6 +52,13 @@ class QueueService:
         ).fetchall()
         summary = QueuePreparation()
         for row in rows:
+            # A user exclusion is an explicit, persistent decision.  It is
+            # checked before every other queue rule so a later app restart or
+            # configuration edit cannot silently put the file back in queue.
+            if not bool(row["transcription_enabled"]):
+                if row["current_state"] not in {"completed_preferred", "verified", "excluded"}:
+                    self._set_state(int(row["id"]), "excluded")
+                continue
             # A failed/no-speech attempt is not a blank record.  It must never
             # silently become eligible again on an ordinary restart; retry is a
             # distinct user command and preserves the previous attempt.

@@ -114,7 +114,7 @@ class WorkerRepository:
             for row in rows:
                 audio_file_id = int(row["id"])
                 self.connection.execute(
-                    "UPDATE audio_files SET current_state = 'queued', updated_at = ? WHERE id = ?",
+                    "UPDATE audio_files SET transcription_enabled = 1, current_state = 'queued', updated_at = ? WHERE id = ?",
                     (now(), audio_file_id),
                 )
                 self.connection.execute(
@@ -130,7 +130,7 @@ class WorkerRepository:
             rows = self.connection.execute(
                 """SELECT a.id FROM audio_files AS a
                    JOIN source_roots AS s ON s.id = a.source_root_id
-                   WHERE a.current_state = 'failed' AND a.readable = 1 AND a.zero_byte = 0
+                   WHERE a.current_state = 'failed' AND a.transcription_enabled = 1 AND a.readable = 1 AND a.zero_byte = 0
                      AND (? IS NULL OR s.original_path = ?)""",
                 (active_root, active_root),
             ).fetchall()
@@ -164,7 +164,7 @@ class WorkerRepository:
                           s.original_path AS source_root_path FROM audio_files a
                    JOIN audio_source_versions v ON v.id = a.current_source_version_id
                    JOIN source_roots s ON s.id = a.source_root_id
-                   WHERE a.current_state = 'queued' AND a.readable = 1 AND a.zero_byte = 0
+                   WHERE a.current_state = 'queued' AND a.transcription_enabled = 1 AND a.readable = 1 AND a.zero_byte = 0
                      AND (? IS NULL OR s.original_path = ?)
                    ORDER BY a.id LIMIT 1""",
                 (active_root, active_root),

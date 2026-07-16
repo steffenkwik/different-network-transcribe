@@ -15,7 +15,13 @@ from app import config as config_mod
 from app.backup.backup_service import BackupService
 from app.database.connection import open_connection, transaction
 from app.database.migrations import MigrationRunner
-from app.database.repositories import TranscriptListPage, TranscriptRepository, now
+from app.database.repositories import (
+    TranscriptionCandidatePage,
+    TranscriptionSelectionRepository,
+    TranscriptListPage,
+    TranscriptRepository,
+    now,
+)
 from app.exports.exporters import ExportService
 from app.paths import DataPaths
 from app.runtime import bundled_path
@@ -162,6 +168,53 @@ class ApplicationService:
             review=sum(counts.get(state, 0) for state in ("failed", "missing_source")),
             failed=counts.get("failed", 0),
         )
+
+    def transcription_candidates(self, *, limit: int = 250, offset: int = 0) -> TranscriptionCandidatePage:
+        """Return a paged, transcript-body-free selection list for the start dialog."""
+        connection = open_connection(self.paths.database_file, read_only=True)
+        try:
+            return TranscriptionSelectionRepository(connection).candidates(
+                self.configured_audio_root(), limit=limit, offset=offset
+            )
+        finally:
+            connection.close()
+
+    def set_transcription_selection(self, audio_file_ids: list[int], *, enabled: bool) -> int:
+        """Persist an explicit selection without starting a worker or touching source files."""
+        root = self.configured_audio_root()
+        if root is None:
+            raise ValueError("Pilih folder audio terlebih dahulu.")
+        connection = open_connection(self.paths.database_file)
+        try:
+            return TranscriptionSelectionRepository(connection).set_enabled(
+                root, audio_file_ids, enabled=enabled
+            )
+        finally:
+            connection.close()
+
+    def replace_transcription_selection(self, selected_audio_file_ids: list[int]) -> int:
+        """Choose an intentional small batch and exclude all other incomplete rows."""
+        root = self.configured_audio_root()
+        if root is None:
+            raise ValueError("Pilih folder audio terlebih dahulu.")
+        connection = open_connection(self.paths.database_file)
+        try:
+            return TranscriptionSelectionRepository(connection).replace_with(
+                root, selected_audio_file_ids
+            )
+        finally:
+            connection.close()
+
+    def set_all_transcription_enabled(self, *, enabled: bool) -> int:
+        """Explicit bulk opt-in for the full pending collection; never implicit."""
+        root = self.configured_audio_root()
+        if root is None:
+            raise ValueError("Pilih folder audio terlebih dahulu.")
+        connection = open_connection(self.paths.database_file)
+        try:
+            return TranscriptionSelectionRepository(connection).set_all_enabled(root, enabled=enabled)
+        finally:
+            connection.close()
 
     def transcript_page(
         self,

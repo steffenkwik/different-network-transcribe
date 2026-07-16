@@ -9,7 +9,7 @@ APP_VERSION = "0.1.0"
 
 # Bumped only when the on-disk schema changes. The migration runner is the
 # authority; this constant is what backups and diagnostics report.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 5
 
 # Written into export front matter and the .dntbackup manifest.
 CONFIG_SCHEMA_VERSION = 1

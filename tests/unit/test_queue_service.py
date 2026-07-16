@@ -63,3 +63,44 @@ def test_restart_rescan_of_completed_sources_creates_zero_attempts_and_zero_queu
         ).fetchone()[0] == 40
     finally:
         connection.close()
+
+
+def test_explicitly_excluded_source_is_never_queued_on_restart(tmp_path: Path) -> None:
+    database = tmp_path / "data" / "Database" / "test.sqlite3"
+    MigrationRunner(database, REPO_ROOT / "migrations", tmp_path / "backups").migrate()
+    source = tmp_path / "source"
+    source.mkdir()
+    audio = source / "leave-out.opus"
+    audio.write_bytes(b"synthetic leave out")
+    connection = open_connection(database)
+    try:
+        root_id = int(
+            connection.execute(
+                "INSERT INTO source_roots(kind, original_path, normalized_path, created_at) VALUES ('audio', ?, ?, 't')",
+                (str(source), str(source).casefold()),
+            ).lastrowid
+        )
+        audio_id = int(
+            connection.execute(
+                """INSERT INTO audio_files(stable_file_id, source_root_id, current_relative_path, basename,
+                   normalized_basename, extension, size_bytes, first_discovered_at, last_seen_at, current_state,
+                   transcription_enabled, readable, zero_byte, created_at, updated_at)
+                   VALUES ('excluded', ?, 'leave-out.opus', 'leave-out.opus', 'leave-out.opus', '.opus', ?, 't', 't',
+                   'excluded', 0, 1, 0, 't', 't')""",
+                (root_id, audio.stat().st_size),
+            ).lastrowid
+        )
+        version_id = int(
+            connection.execute(
+                "INSERT INTO audio_source_versions(audio_file_id, size_bytes, sha256, discovered_at) VALUES (?, ?, ?, 't')",
+                (audio_id, audio.stat().st_size, hashlib.sha256(audio.read_bytes()).hexdigest()),
+            ).lastrowid
+        )
+        connection.execute(
+            "UPDATE audio_files SET current_source_version_id = ? WHERE id = ?", (version_id, audio_id)
+        )
+        prepared = QueueService(connection).prepare()
+        assert prepared.queued == 0
+        assert connection.execute("SELECT current_state FROM audio_files WHERE id = ?", (audio_id,)).fetchone()[0] == "excluded"
+    finally:
+        connection.close()

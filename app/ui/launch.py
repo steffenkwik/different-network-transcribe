@@ -10,19 +10,24 @@ import json
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -31,6 +36,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -48,6 +54,8 @@ from app.services.application_service import ApplicationService, TestBatchSummar
 from app.services.chat_import_service import ChatScanSummary
 from app.services.discovery_service import ScanSummary
 from app.services.metadata_matching_service import MatchingSummary
+from app.ui.brand import DifferentNetworkMark
+from app.ui.theme import APP_STYLESHEET
 from app.version import APP_NAME, APP_VERSION
 
 
@@ -151,11 +159,12 @@ class FirstRunWizard(QWizard):
 
     def _model(self) -> QWizardPage:
         page = QWizardPage()
-        page.setTitle("Pilih model")
+        page.setTitle("Model untuk transkripsi")
         layout = QVBoxLayout(page)
-        layout.addWidget(QLabel(S.MODEL_SMALL_TITLE))
-        layout.addWidget(QLabel(S.MODEL_MEDIUM_TITLE))
-        layout.addWidget(QLabel("Unduh atau impor model secara eksplisit dari Pengaturan & Data."))
+        layout.addWidget(QLabel("Anda selalu memilih model lagi sebelum menekan Mulai."))
+        layout.addWidget(QLabel(f"• {S.MODEL_SMALL_TITLE} — paling tepat untuk uji awal."))
+        layout.addWidget(QLabel(f"• {S.MODEL_MEDIUM_TITLE} — untuk pemeriksaan yang lebih teliti."))
+        layout.addWidget(QLabel("Unduh atau impor model secara eksplisit dari Pengaturan & Data. Audio tidak pernah dikirim ke cloud."))
         return page
 
     def _finish(self) -> QWizardPage:
@@ -164,6 +173,253 @@ class FirstRunWizard(QWizard):
         layout = QVBoxLayout(page)
         layout.addWidget(QLabel(S.WIZARD_FINISH))
         return page
+
+
+class TranscriptionSetupDialog(QDialog):
+    """A deliberate, beginner-friendly preflight before the worker can start.
+
+    A user chooses the local model and either selects a safe batch (the default)
+    or makes an unmistakable opt-in to every incomplete file in the current root.
+    The list is bounded so a 13,000-file archive never freezes Qt.
+    """
+
+    DISPLAY_LIMIT = 250
+    SAFE_BATCH_LIMIT = 20
+
+    def __init__(self, service: ApplicationService, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.service = service
+        self._candidate_ids: list[int] = []
+        self._updating = False
+        self.setWindowTitle("Siapkan Transkripsi")
+        self.resize(900, 690)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(14)
+        eyebrow = QLabel("LANGKAH TERAKHIR SEBELUM WORKER DIMULAI")
+        eyebrow.setObjectName("eyebrow")
+        layout.addWidget(eyebrow)
+        heading = QLabel("Pilih model dan file yang akan diproses")
+        heading.setObjectName("pageTitle")
+        layout.addWidget(heading)
+        helper = QLabel(
+            "Pilihan ini hanya memengaruhi file belum selesai. Transkrip yang sudah selesai tidak akan diulang kecuali Anda meminta proses ulang dari detail file."
+        )
+        helper.setObjectName("helperText")
+        helper.setWordWrap(True)
+        layout.addWidget(helper)
+
+        self.model_status = self.service.model_status()
+        model_section = QFrame()
+        model_section.setObjectName("workflowCard")
+        model_layout = QHBoxLayout(model_section)
+        model_layout.setContentsMargins(16, 14, 16, 14)
+        model_copy = QVBoxLayout()
+        title = QLabel("1. Model lokal")
+        title.setObjectName("sectionTitle")
+        model_copy.addWidget(title)
+        model_copy.addWidget(QLabel("Model dimuat sekali oleh worker dan tetap berada di komputer ini."))
+        model_layout.addLayout(model_copy, 1)
+        self.small_model = self._model_radio("small", S.MODEL_SMALL_TITLE, "Cepat; direkomendasikan untuk mulai.")
+        self.medium_model = self._model_radio("medium", S.MODEL_MEDIUM_TITLE, "Lebih akurat; membutuhkan waktu lebih lama.")
+        self.model_group = QButtonGroup(self)
+        self.model_group.addButton(self.small_model)
+        self.model_group.addButton(self.medium_model)
+        model_layout.addWidget(self.small_model)
+        model_layout.addWidget(self.medium_model)
+        layout.addWidget(model_section)
+
+        files_heading = QHBoxLayout()
+        files_title = QLabel("2. Pilih file")
+        files_title.setObjectName("sectionTitle")
+        files_heading.addWidget(files_title)
+        files_heading.addStretch(1)
+        self.selection_count_label = QLabel()
+        self.selection_count_label.setObjectName("statusPill")
+        files_heading.addWidget(self.selection_count_label)
+        layout.addLayout(files_heading)
+
+        self.process_all = QCheckBox("Saya ingin mengaktifkan semua file belum selesai di folder ini")
+        self.process_all.setToolTip(
+            "Opsi ini menyalakan seluruh file belum selesai. Konfirmasi tambahan diperlukan agar koleksi besar tidak terproses tanpa sengaja."
+        )
+        self.process_all.toggled.connect(self._toggle_all_mode)
+        layout.addWidget(self.process_all)
+        self.confirm_all = QCheckBox("Saya memahami bahwa ini dapat memproses batch besar dan memakan waktu lama.")
+        self.confirm_all.setVisible(False)
+        self.confirm_all.toggled.connect(self._update_start_state)
+        layout.addWidget(self.confirm_all)
+
+        table_actions = QHBoxLayout()
+        self.select_visible_button = QPushButton("Centang semua yang terlihat")
+        self.select_visible_button.clicked.connect(lambda: self._check_visible(True))
+        self.clear_visible_button = QPushButton("Kosongkan pilihan")
+        self.clear_visible_button.clicked.connect(lambda: self._check_visible(False))
+        table_actions.addWidget(self.select_visible_button)
+        table_actions.addWidget(self.clear_visible_button)
+        table_actions.addStretch(1)
+        self.file_help = QLabel()
+        self.file_help.setObjectName("subtle")
+        table_actions.addWidget(self.file_help)
+        layout.addLayout(table_actions)
+
+        self.file_table = QTableWidget(0, 5)
+        self.file_table.setHorizontalHeaderLabels(["Proses", "Nama file", "Durasi", "Status", "Lokasi relatif"])
+        self.file_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.file_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.file_table.itemChanged.connect(self._selection_changed)
+        header = self.file_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.file_table, 1)
+
+        self.validation_label = QLabel()
+        self.validation_label.setObjectName("helperText")
+        self.validation_label.setWordWrap(True)
+        layout.addWidget(self.validation_label)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.start_button = QPushButton("Mulai Transkripsi")
+        self.start_button.setObjectName("primaryButton")
+        self.start_button.clicked.connect(self._commit_and_accept)
+        buttons.addButton(self.start_button, QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._load_models()
+        self._load_candidates()
+
+    def _model_radio(self, key: str, title: str, description: str) -> QRadioButton:
+        models = self.model_status.get("models", {})
+        entry = models.get(key, {}) if isinstance(models, dict) else {}
+        installed = bool(entry.get("installed")) if isinstance(entry, dict) else False
+        label = f"{title}\n{description}\n{'Terpasang' if installed else 'Belum terpasang'}"
+        radio = QRadioButton(label)
+        radio.setProperty("modelKey", key)
+        radio.setEnabled(installed)
+        radio.setToolTip("Model belum terpasang. Buka Pengaturan & Data untuk unduh atau impor." if not installed else title)
+        return radio
+
+    def _load_models(self) -> None:
+        default = str(self.model_status.get("default_model", "small"))
+        preferred = self.small_model if default == "small" else self.medium_model
+        other = self.medium_model if preferred is self.small_model else self.small_model
+        if preferred.isEnabled():
+            preferred.setChecked(True)
+        elif other.isEnabled():
+            other.setChecked(True)
+        self.model_group.buttonClicked.connect(self._update_start_state)
+
+    def _load_candidates(self) -> None:
+        page = self.service.transcription_candidates(limit=self.DISPLAY_LIMIT)
+        self._candidate_total = page.total
+        self._updating = True
+        self.file_table.setRowCount(len(page.rows))
+        selected_by_default = 0
+        for index, row in enumerate(page.rows):
+            audio_id = int(row["id"])
+            self._candidate_ids.append(audio_id)
+            check = QTableWidgetItem()
+            check.setData(Qt.ItemDataRole.UserRole, audio_id)
+            currently_enabled = bool(row["transcription_enabled"])
+            # A safe initial view selects at most 20 files; current selection is
+            # respected only within that same safe cap.
+            selected = currently_enabled and selected_by_default < self.SAFE_BATCH_LIMIT
+            if selected:
+                selected_by_default += 1
+            check.setCheckState(Qt.CheckState.Checked if selected else Qt.CheckState.Unchecked)
+            self.file_table.setItem(index, 0, check)
+            self.file_table.setItem(index, 1, QTableWidgetItem(str(row["basename"])))
+            duration = row["duration_seconds"]
+            duration_text = "-" if duration is None else f"{float(duration):.1f} dtk"
+            self.file_table.setItem(index, 2, QTableWidgetItem(duration_text))
+            self.file_table.setItem(index, 3, QTableWidgetItem(str(row["current_state"])))
+            self.file_table.setItem(index, 4, QTableWidgetItem(str(row["current_relative_path"])))
+        self._updating = False
+        if page.total == 0:
+            self.file_help.setText("Belum ada file siap diproses. Lakukan Scan File Baru terlebih dahulu.")
+        elif page.total > self.DISPLAY_LIMIT:
+            self.file_help.setText(f"Menampilkan {self.DISPLAY_LIMIT} dari {page.total} file; mode aman hanya memilih maks. 20.")
+        else:
+            self.file_help.setText(f"{page.total} file belum selesai ditemukan. Mode aman: maks. {self.SAFE_BATCH_LIMIT} file.")
+        self._update_start_state()
+
+    def _checked_ids(self) -> list[int]:
+        ids: list[int] = []
+        for row in range(self.file_table.rowCount()):
+            item = self.file_table.item(row, 0)
+            if item is not None and item.checkState() == Qt.CheckState.Checked:
+                value = item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(value, int):
+                    ids.append(value)
+        return ids
+
+    def _check_visible(self, checked: bool) -> None:
+        self._updating = True
+        for row in range(self.file_table.rowCount()):
+            item = self.file_table.item(row, 0)
+            if item is not None:
+                item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+        self._updating = False
+        self._update_start_state()
+
+    def _selection_changed(self, _: QTableWidgetItem) -> None:
+        if not self._updating:
+            self._update_start_state()
+
+    def _toggle_all_mode(self, checked: bool) -> None:
+        self.file_table.setEnabled(not checked)
+        self.select_visible_button.setEnabled(not checked)
+        self.clear_visible_button.setEnabled(not checked)
+        self.confirm_all.setVisible(checked and self._candidate_total > self.SAFE_BATCH_LIMIT)
+        if not checked:
+            self.confirm_all.setChecked(False)
+        self._update_start_state()
+
+    def _update_start_state(self, *_: object) -> None:
+        selected = len(self._checked_ids())
+        installed_model = self.model_group.checkedButton() is not None
+        if self.process_all.isChecked():
+            allowed = self._candidate_total > 0 and installed_model and (
+                self._candidate_total <= self.SAFE_BATCH_LIMIT or self.confirm_all.isChecked()
+            )
+            message = (
+                f"Seluruh {self._candidate_total} file belum selesai akan diaktifkan."
+                if allowed
+                else "Centang konfirmasi untuk menjalankan batch besar."
+            )
+        else:
+            allowed = 0 < selected <= self.SAFE_BATCH_LIMIT and installed_model
+            message = (
+                f"{selected} file akan diproses dalam batch aman."
+                if selected <= self.SAFE_BATCH_LIMIT
+                else f"Pilih maksimal {self.SAFE_BATCH_LIMIT} file untuk batch aman, atau gunakan opsi semua file dengan konfirmasi."
+            )
+        if not installed_model:
+            message = "Pasang Small atau Medium terlebih dahulu di Pengaturan & Data."
+        self.selection_count_label.setText("Semua file" if self.process_all.isChecked() else f"{selected} dipilih")
+        self.validation_label.setText(message)
+        self.start_button.setEnabled(allowed)
+
+    def _commit_and_accept(self) -> None:
+        button = self.model_group.checkedButton()
+        if button is None:
+            return
+        key = str(button.property("modelKey"))
+        try:
+            self.service.set_default_model(key)
+            if self.process_all.isChecked():
+                self.service.set_all_transcription_enabled(enabled=True)
+            else:
+                self.service.replace_transcription_selection(self._checked_ids())
+        except (RuntimeError, ValueError) as exc:
+            QMessageBox.warning(self, APP_NAME, str(exc))  # type: ignore[call-arg]
+            return
+        self.accept()
 
 
 class MainWindow(QMainWindow):
@@ -180,74 +436,230 @@ class MainWindow(QMainWindow):
         self._player = QMediaPlayer(self)
         self._player.setAudioOutput(self._audio_output)
         self.setWindowTitle(APP_NAME)
-        self.resize(1180, 760)
+        self.resize(1280, 800)
+        self.setMinimumSize(1030, 660)
         central = QWidget()
+        central.setObjectName("contentArea")
         root = QHBoxLayout(central)
-        navigation = QVBoxLayout()
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(250)
+        navigation = QVBoxLayout(sidebar)
+        navigation.setContentsMargins(18, 22, 18, 18)
+        navigation.setSpacing(8)
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(10)
+        brand_row.addWidget(DifferentNetworkMark(sidebar, size=44))
+        brand_text = QVBoxLayout()
+        brand_name = QLabel("different network")
+        brand_name.setObjectName("brandName")
+        brand_product = QLabel("TRANSCRIBE")
+        brand_product.setObjectName("brandProduct")
+        brand_text.addWidget(brand_name)
+        brand_text.addWidget(brand_product)
+        brand_row.addLayout(brand_text)
+        brand_row.addStretch(1)
+        navigation.addLayout(brand_row)
+        navigation.addSpacing(24)
+        nav_label = QLabel("WORKSPACE")
+        nav_label.setObjectName("eyebrow")
+        navigation.addWidget(nav_label)
         self.pages = QStackedWidget()
+        self.pages.currentChanged.connect(self._sync_navigation)
+        self._nav_buttons: list[QPushButton] = []
         for index, label in enumerate((S.NAV_HOME, S.NAV_ALL, S.NAV_REVIEW, S.NAV_SETTINGS)):
             button = QPushButton(label)
+            button.setObjectName("navButton")
+            button.setCheckable(True)
+            button.setAccessibleName(f"Buka halaman {label}")
             button.clicked.connect(lambda _, i=index: self.pages.setCurrentIndex(i))
             navigation.addWidget(button)
+            self._nav_buttons.append(button)
         navigation.addStretch(1)
-        root.addLayout(navigation, 1)
-        root.addWidget(self.pages, 5)
+        self.local_only_label = QLabel("Lokal saja · tidak ada unggahan")
+        self.local_only_label.setObjectName("statusPill")
+        self.local_only_label.setWordWrap(True)
+        navigation.addWidget(self.local_only_label)
+        version_label = QLabel(f"v{APP_VERSION}")
+        version_label.setObjectName("subtle")
+        navigation.addWidget(version_label)
+        root.addWidget(sidebar)
+        root.addWidget(self.pages, 1)
         self.pages.addWidget(self._home())
         self.pages.addWidget(self._all())
         self.pages.addWidget(self._review())
         self.pages.addWidget(self._settings())
         self.setCentralWidget(central)
+        self._sync_navigation(0)
         self._worker_status_timer = QTimer(self)
         self._worker_status_timer.setInterval(750)
         self._worker_status_timer.timeout.connect(self.refresh)
         self._worker_status_timer.start()
 
+    def _sync_navigation(self, current_index: int) -> None:
+        """Keep the selected sidebar destination obvious for mouse and keyboard users."""
+        for index, button in enumerate(self._nav_buttons):
+            button.setChecked(index == current_index)
+
     def _home(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.addWidget(QLabel(f"{APP_NAME} {APP_VERSION}"))
-        self.summary_label = QLabel()
-        layout.addWidget(self.summary_label)
-        self.operation_label = QLabel("Siap.")
-        layout.addWidget(self.operation_label)
+        layout.setContentsMargins(30, 28, 30, 28)
+        layout.setSpacing(16)
+        header = QHBoxLayout()
+        title_group = QVBoxLayout()
+        eyebrow = QLabel("TRANSKRIPSI LOKAL")
+        eyebrow.setObjectName("eyebrow")
+        title_group.addWidget(eyebrow)
+        title = QLabel("Beranda")
+        title.setObjectName("pageTitle")
+        title_group.addWidget(title)
+        subtitle = QLabel("Kelola transkripsi WhatsApp dengan aman, bertahap, dan sepenuhnya di komputer ini.")
+        subtitle.setObjectName("helperText")
+        title_group.addWidget(subtitle)
+        header.addLayout(title_group)
+        header.addStretch(1)
+        self.operation_label = QLabel("Siap untuk langkah berikutnya.")
+        self.operation_label.setObjectName("statusPill")
+        header.addWidget(self.operation_label)
+        layout.addLayout(header)
+
+        metrics = QGridLayout()
+        metrics.setHorizontalSpacing(12)
+        metrics.setVerticalSpacing(12)
+        self.metric_total = self._metric_card("Total VN", "0")
+        self.metric_done = self._metric_card("Selesai", "0", accent=True)
+        self.metric_pending = self._metric_card("Belum diproses", "0")
+        self.metric_review = self._metric_card("Perlu diperiksa", "0")
+        metrics.addWidget(self.metric_total, 0, 0)
+        metrics.addWidget(self.metric_done, 0, 1)
+        metrics.addWidget(self.metric_pending, 0, 2)
+        metrics.addWidget(self.metric_review, 0, 3)
+        layout.addLayout(metrics)
+
+        workflow = QFrame()
+        workflow.setObjectName("heroCard")
+        workflow_layout = QHBoxLayout(workflow)
+        workflow_layout.setContentsMargins(20, 18, 20, 18)
+        workflow_copy = QVBoxLayout()
+        workflow_title = QLabel("Siapkan transkripsi dengan tenang")
+        workflow_title.setObjectName("sectionTitle")
+        workflow_copy.addWidget(workflow_title)
+        workflow_info = QLabel(
+            "Pilih model, centang file yang memang ingin diproses, lalu mulai worker. "
+            "File yang tidak dicentang disimpan sebagai dikecualikan dan tidak akan ikut antrean."
+        )
+        workflow_info.setObjectName("helperText")
+        workflow_info.setWordWrap(True)
+        workflow_copy.addWidget(workflow_info)
+        workflow_layout.addLayout(workflow_copy, 1)
+        self.start_button = QPushButton("Siapkan && Mulai Transkripsi")
+        self.start_button.setObjectName("primaryButton")
+        self.start_button.setToolTip("Pilih model lokal dan file sebelum worker dimulai.")
+        self.start_button.clicked.connect(self._start)
+        workflow_layout.addWidget(self.start_button)
+        layout.addWidget(workflow)
+
+        progress_card = QFrame()
+        progress_card.setObjectName("card")
+        progress_layout = QVBoxLayout(progress_card)
+        progress_layout.setContentsMargins(18, 16, 18, 16)
+        progress_title = QLabel("Status worker")
+        progress_title.setObjectName("sectionTitle")
+        progress_layout.addWidget(progress_title)
         self.worker_label = QLabel("Worker tidak aktif")
+        self.worker_label.setObjectName("helperText")
         self.worker_progress = QProgressBar()
         self.worker_progress.setRange(0, 100)
-        layout.addWidget(self.worker_label)
-        layout.addWidget(self.worker_progress)
+        self.worker_progress.setFormat("%p% selesai pada sesi ini")
+        progress_layout.addWidget(self.worker_label)
+        progress_layout.addWidget(self.worker_progress)
+        worker_actions = QHBoxLayout()
         self.scan_button = QPushButton(S.ACTION_SCAN)
         self.scan_button.clicked.connect(self._scan)
-        layout.addWidget(self.scan_button)
+        worker_actions.addWidget(self.scan_button)
         self.test_button = QPushButton(S.ACTION_TEST_20)
         self.test_button.setToolTip("Pilih folder salinan berisi 1 sampai 20 audio untuk uji aman.")
         self.test_button.clicked.connect(self._prepare_test_batch)
-        layout.addWidget(self.test_button)
-        self.start_button = QPushButton(S.ACTION_START)
-        self.start_button.clicked.connect(self._start)
-        layout.addWidget(self.start_button)
+        worker_actions.addWidget(self.test_button)
         self.pause_button = QPushButton(S.ACTION_PAUSE)
         self.pause_button.clicked.connect(self._pause)
-        layout.addWidget(self.pause_button)
+        worker_actions.addWidget(self.pause_button)
         self.stop_button = QPushButton(S.ACTION_SAFE_STOP)
+        self.stop_button.setObjectName("warningButton")
         self.stop_button.clicked.connect(self._safe_stop)
-        layout.addWidget(self.stop_button)
+        worker_actions.addWidget(self.stop_button)
         self.retry_failed_button = QPushButton("Coba Lagi File Gagal")
         self.retry_failed_button.setToolTip("Hanya mengantrekan ulang file berstatus Gagal; file selesai tidak disentuh.")
         self.retry_failed_button.clicked.connect(self._retry_failed)
-        layout.addWidget(self.retry_failed_button)
+        worker_actions.addWidget(self.retry_failed_button)
+        worker_actions.addStretch(1)
+        progress_layout.addLayout(worker_actions)
+        layout.addWidget(progress_card)
+
+        output_card = QFrame()
+        output_card.setObjectName("workflowCard")
+        output_layout = QHBoxLayout(output_card)
+        output_layout.setContentsMargins(18, 14, 18, 14)
+        output_copy = QVBoxLayout()
+        output_title = QLabel("Hasil dan pemulihan")
+        output_title.setObjectName("sectionTitle")
+        output_copy.addWidget(output_title)
+        output_info = QLabel("Buat Markdown, TXT, CSV, dan JSONL dari database lokal kapan saja. Pembuatan hasil tidak mentranskripsi ulang audio.")
+        output_info.setObjectName("helperText")
+        output_info.setWordWrap(True)
+        output_copy.addWidget(output_info)
+        output_layout.addLayout(output_copy, 1)
         self.export_button = QPushButton(S.ACTION_EXPORT)
         self.export_button.clicked.connect(self._export)
-        layout.addWidget(self.export_button)
+        output_layout.addWidget(self.export_button)
         self.open_output_button = QPushButton(S.ACTION_OPEN_OUTPUT)
         self.open_output_button.clicked.connect(self._open_output)
-        layout.addWidget(self.open_output_button)
+        output_layout.addWidget(self.open_output_button)
+        layout.addWidget(output_card)
         layout.addStretch(1)
         return page
+
+    @staticmethod
+    def _metric_card(label: str, value: str, *, accent: bool = False) -> QFrame:
+        card = QFrame()
+        card.setObjectName("metricCard")
+        card.setMinimumHeight(92)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 12, 16, 12)
+        value_label = QLabel(value)
+        value_label.setObjectName("accentMetric" if accent else "metricValue")
+        value_label.setProperty("metricRole", label)
+        label_widget = QLabel(label)
+        label_widget.setObjectName("metricLabel")
+        card_layout.addWidget(value_label)
+        card_layout.addWidget(label_widget)
+        return card
+
+    @staticmethod
+    def _set_metric(card: QFrame, value: int) -> None:
+        labels = cast(list[QLabel], list(card.findChildren(QLabel)))
+        for label in labels:
+            if label.property("metricRole") is not None:
+                label.setText(str(value))
+                return
 
     def _all(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.addWidget(QLabel(S.NAV_ALL))
+        layout.setContentsMargins(30, 28, 30, 28)
+        layout.setSpacing(14)
+        eyebrow = QLabel("ARSIP LOKAL")
+        eyebrow.setObjectName("eyebrow")
+        layout.addWidget(eyebrow)
+        title = QLabel(S.NAV_ALL)
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        intro = QLabel("Cari dan buka detail hanya saat diperlukan. Daftar ini dimuat per halaman agar tetap cepat untuk koleksi besar.")
+        intro.setObjectName("helperText")
+        layout.addWidget(intro)
         controls = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Cari nama file, pengirim, atau chat")
@@ -261,6 +673,7 @@ class MainWindow(QMainWindow):
             ("Selesai", "completed_preferred"),
             ("Antrean", "queued"),
             ("Ditemukan", "discovered"),
+            ("Dikecualikan", "excluded"),
             ("Gagal", "failed"),
             ("Sumber berubah", "stale_source_changed"),
             ("Sumber hilang", "missing_source"),
@@ -319,10 +732,17 @@ class MainWindow(QMainWindow):
     def _review(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.addWidget(QLabel(S.NAV_REVIEW))
-        layout.addWidget(
-            QLabel("Baris di bawah memerlukan perhatian: metadata ambigu/tidak cocok, sumber bermasalah, atau kualitas rendah.")
-        )
+        layout.setContentsMargins(30, 28, 30, 28)
+        layout.setSpacing(14)
+        eyebrow = QLabel("PERLU TINDAK LANJUT")
+        eyebrow.setObjectName("eyebrow")
+        layout.addWidget(eyebrow)
+        title = QLabel(S.NAV_REVIEW)
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        review_intro = QLabel("Baris di bawah memerlukan perhatian: metadata ambigu/tidak cocok, sumber bermasalah, atau kualitas rendah.")
+        review_intro.setObjectName("helperText")
+        layout.addWidget(review_intro)
         self.review_table = self._new_transcript_table()
         self.review_table.itemDoubleClicked.connect(self._open_detail_from_item)
         layout.addWidget(self.review_table)
@@ -362,8 +782,18 @@ class MainWindow(QMainWindow):
     def _settings(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.addWidget(QLabel(S.NAV_SETTINGS))
-        layout.addWidget(QLabel(S.MODEL_CHANGE_NOTICE))
+        layout.setContentsMargins(30, 28, 30, 28)
+        layout.setSpacing(10)
+        eyebrow = QLabel("KONFIGURASI LOKAL")
+        eyebrow.setObjectName("eyebrow")
+        layout.addWidget(eyebrow)
+        title = QLabel(S.NAV_SETTINGS)
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        model_notice = QLabel(S.MODEL_CHANGE_NOTICE)
+        model_notice.setObjectName("helperText")
+        model_notice.setWordWrap(True)
+        layout.addWidget(model_notice)
 
         layout.addWidget(QLabel("Folder audio"))
         self.audio_root = QLineEdit()
@@ -419,14 +849,16 @@ class MainWindow(QMainWindow):
 
     def refresh(self) -> None:
         if self.service is None:
-            self.summary_label.setText("Total VN: 0    Selesai: 0    Belum Diproses: 0")
+            self._set_metric(self.metric_total, 0)
+            self._set_metric(self.metric_done, 0)
+            self._set_metric(self.metric_pending, 0)
+            self._set_metric(self.metric_review, 0)
             return
         counts = self.service.dashboard_counts()
-        self.summary_label.setText(
-            f"Total VN: {counts.total}    Selesai: {counts.completed}    "
-            f"Belum Diproses: {counts.pending}    Perlu Diperiksa: {counts.review}    "
-            f"Gagal: {counts.failed}"
-        )
+        self._set_metric(self.metric_total, counts.total)
+        self._set_metric(self.metric_done, counts.completed)
+        self._set_metric(self.metric_pending, counts.pending)
+        self._set_metric(self.metric_review, counts.review)
         self._refresh_transcript_table()
         self._refresh_review_table()
         audio_root = self.service.configured_audio_root()
@@ -664,6 +1096,9 @@ class MainWindow(QMainWindow):
                 service.resume_transcription()
                 self.worker_label.setText("Melanjutkan worker…")
             else:
+                preflight = TranscriptionSetupDialog(service, self)
+                if preflight.exec() != QDialog.DialogCode.Accepted:
+                    return
                 pid = service.start_transcription()
                 self.worker_label.setText(f"Memulai worker (PID {pid})…")
             QTimer.singleShot(1000, self.refresh)
@@ -1038,6 +1473,7 @@ def run_ui(data_dir: Path | None = None, self_test: bool = False) -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
+    app.setStyleSheet(APP_STYLESHEET)
     if first_run and not self_test:
         wizard = FirstRunWizard(paths)
         if wizard.exec() != QDialog.DialogCode.Accepted:

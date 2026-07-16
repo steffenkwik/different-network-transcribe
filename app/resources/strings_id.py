@@ -19,7 +19,7 @@ UNKNOWN_SENDER = "Pengirim tidak diketahui"
 NAV_HOME = "Beranda"
 NAV_ALL = "Semua Transkrip"
 NAV_REVIEW = "Perlu Diperiksa"
-NAV_SETTINGS = "Pengaturan & Data"
+NAV_SETTINGS = "Pengaturan dan Data"
 
 # --- Primary actions --------------------------------------------------------
 ACTION_SCAN = "Scan File Baru"
