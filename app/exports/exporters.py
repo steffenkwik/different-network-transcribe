@@ -12,6 +12,9 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
+from app.database.connection import transaction
+from app.database.repositories import now
+
 
 @dataclass(frozen=True)
 class ExportRecord:
@@ -106,12 +109,65 @@ class ExportService:
     def export_all(
         self, *, include_individual: bool = False, include_generated_at: bool = False
     ) -> dict[str, int]:
-        records = self.records()
-        self._markdown(records, include_individual, include_generated_at)
-        self._text(records)
-        self._csv(records)
-        self._jsonl(records)
+        options_json = json.dumps(
+            {
+                "include_generated_at": include_generated_at,
+                "include_individual": include_individual,
+            },
+            sort_keys=True,
+        )
+        with transaction(self.connection, immediate=True):
+            cursor = self.connection.execute(
+                """INSERT INTO export_runs(format, options_json, started_at, status)
+                   VALUES ('all', ?, ?, 'running')""",
+                (options_json, now()),
+            )
+        if cursor.lastrowid is None:
+            raise RuntimeError("SQLite tidak mengembalikan ID ekspor.")
+        export_run_id = int(cursor.lastrowid)
+        try:
+            records = self.records()
+            self._markdown(records, include_individual, include_generated_at)
+            self._text(records)
+            self._csv(records)
+            self._jsonl(records)
+            with transaction(self.connection, immediate=True):
+                self.connection.execute(
+                    """UPDATE export_runs
+                       SET completed_at = ?, record_count = ?, output_path = ?, output_sha256 = ?,
+                           status = 'completed'
+                       WHERE id = ?""",
+                    (
+                        now(),
+                        len(records),
+                        str(self.output_dir),
+                        self._output_manifest_hash(),
+                        export_run_id,
+                    ),
+                )
+        except OSError as exc:
+            with transaction(self.connection, immediate=True):
+                self.connection.execute(
+                    """UPDATE export_runs SET completed_at = ?, status = 'failed', error = ?
+                       WHERE id = ?""",
+                    (now(), type(exc).__name__, export_run_id),
+                )
+            raise
         return {"records": len(records)}
+
+    def _output_manifest_hash(self) -> str:
+        """Hash derived artifacts for the export audit without changing their bytes."""
+        files = sorted(path for path in self.output_dir.rglob("*") if path.is_file())
+        manifest = [
+            {
+                "path": str(path.relative_to(self.output_dir).as_posix()),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            for path in files
+        ]
+        return hashlib.sha256(
+            json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        ).hexdigest()
 
     def _markdown(self, records: list[ExportRecord], individual: bool, generated_at: bool) -> None:
         daily: dict[str, list[ExportRecord]] = defaultdict(list)

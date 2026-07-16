@@ -60,6 +60,20 @@ def test_exports_are_complete_deterministic_and_rebuildable(tmp_path: Path) -> N
         _seed(connection, None, "synthetic unknown", "two")
         service = ExportService(connection, tmp_path / "Output")
         assert service.export_all(include_individual=True) == {"records": 2}
+        audit = connection.execute(
+            """SELECT format, options_json, record_count, output_path, output_sha256, status
+               FROM export_runs ORDER BY id"""
+        ).fetchone()
+        assert audit is not None
+        assert audit["format"] == "all"
+        assert json.loads(audit["options_json"]) == {
+            "include_generated_at": False,
+            "include_individual": True,
+        }
+        assert audit["record_count"] == 2
+        assert audit["output_path"] == str(tmp_path / "Output")
+        assert len(str(audit["output_sha256"])) == 64
+        assert audit["status"] == "completed"
         daily = tmp_path / "Output" / "Markdown" / "Daily" / "2026" / "2026-07" / "2026-07-15.md"
         first = daily.read_bytes()
         service.export_all(include_individual=True)
