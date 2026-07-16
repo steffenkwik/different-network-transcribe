@@ -1,6 +1,6 @@
 # Final Audit — v0.1.0 Build Candidate
 
-**Audited:** 2026-07-16
+**Audited:** 2026-07-16 (local gate + remote CI verified)
 **Scope:** all implemented phases, post-audit Different Network UI/UX refresh, final source quality gate, fresh Windows packaging, smoke test, and recorded limited real-data test.
 **Safety boundary:** no new real audio/chat file was opened or transcribed for this audit.
 
@@ -37,7 +37,7 @@ installer smoke test passed (install + UI self-test + uninstall/data preservatio
 
 ## Deliberate boundaries and follow-up actions
 
-1. **No release asset has been published by this audit.** GitHub Actions quality-gate and Windows build-smoke passed for commit `968cddc`; this UX refresh needs a final push to run the same remote gates. Publish/tag only when the team chooses to release the assets.
+1. **No release asset has been published by this audit.** GitHub Actions quality-gate and Windows build-smoke passed for the UI refresh at commit `44bd0f9` (run `29497575364`). Publish/tag only when the team chooses to release the assets.
 2. **Offline model packs are not bundled into the normal installer.** This is intentional. Generate them explicitly from local verified model folders and attach them as separate release assets when needed.
 3. **The installer is unsigned.** SmartScreen may warn. A code-signing certificate is a distribution enhancement, not a code defect.
 4. **The 13,000-file production run was not started.** This is a mandatory safety boundary, not an unfinished test. The application is designed for the user to run locally after reviewing the 20-file result.

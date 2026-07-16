@@ -1,7 +1,7 @@
 # Implementation Status
 
 **App version:** 0.1.0
-**Updated:** 2026-07-16 — post-audit Different Network UX refresh
+**Updated:** 2026-07-16 — post-audit Different Network UX refresh; remote CI verified
 **Evidence convention:** `Tested` means an automated gate or explicitly recorded limited local test has passed. `Implemented` means the code/workflow exists but needs an external publication or CI action.
 
 ## Phase progress
@@ -20,7 +20,7 @@
 | 9 | Indonesian PySide6 UI | Tested | Branded black/yellow/orange desktop UI; wizard, four sections, pagination, filter, review/detail/edit/playback, model-and-file preflight tests |
 | 10 | Backup, restore, diagnostic bundle | Tested | SQLite backup API, staging restore, manifest/audit and privacy tests |
 | 11 | Windows packaging | Tested | Fresh installer + portable build and Python-free smoke test |
-| 12 | CI/release workflows and privacy scan | Tested | GitHub Actions quality gate and Windows build-smoke passed for commit `968cddc` |
+| 12 | CI/release workflows and privacy scan | Tested | GitHub Actions quality gate and Windows build-smoke passed for commit `44bd0f9` |
 | 13 | Limited real-data test | Tested | User-confirmed 20-file run; all source SHA checks unchanged; second run skipped all |
 | 14 | Final audit | Complete | `docs/FINAL_AUDIT.md` |
 
@@ -70,7 +70,7 @@ derived formats                Markdown, TXT, CSV, JSONL present
 
 ## Distribution follow-up
 
-- The public GitHub repository requires one final push for this post-audit UI refresh. The previous GitHub Actions quality-gate and build-smoke passed for commit `968cddc`.
+- GitHub Actions quality-gate and Windows build-smoke passed for the post-audit UI refresh at commit `44bd0f9` (run `29497575364`).
 - Model packs are generated only by the explicit local `scripts/build_model_packs.py` command. Model weights stay ignored and are never included in the normal installer or Git history.
 - The installer is unsigned. Windows SmartScreen warning remains an accepted, documented release risk.
 
