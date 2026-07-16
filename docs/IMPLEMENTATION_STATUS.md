@@ -20,7 +20,7 @@
 | 9 | Indonesian PySide6 UI | Tested | Wizard, four sections, pagination, filter, review/detail/edit/playback tests |
 | 10 | Backup, restore, diagnostic bundle | Tested | SQLite backup API, staging restore, manifest/audit and privacy tests |
 | 11 | Windows packaging | Tested | Fresh installer + portable build and Python-free smoke test |
-| 12 | CI/release workflows and privacy scan | Implemented | Workflows and release checks are committed; remote GitHub run follows push |
+| 12 | CI/release workflows and privacy scan | Tested | GitHub Actions quality gate and Windows build-smoke passed for commit `968cddc` |
 | 13 | Limited real-data test | Tested | User-confirmed 20-file run; all source SHA checks unchanged; second run skipped all |
 | 14 | Final audit | Complete | `docs/FINAL_AUDIT.md` |
 
@@ -69,6 +69,6 @@ derived formats                Markdown, TXT, CSV, JSONL present
 
 ## Distribution follow-up
 
-- The public GitHub repository already exists; current code must be pushed to trigger the `master` CI workflow.
+- The public GitHub repository is current. GitHub Actions quality-gate and build-smoke both passed for commit `968cddc`.
 - Model packs are generated only by the explicit local `scripts/build_model_packs.py` command. Model weights stay ignored and are never included in the normal installer or Git history.
 - The installer is unsigned. Windows SmartScreen warning remains an accepted, documented release risk.

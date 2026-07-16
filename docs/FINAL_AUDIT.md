@@ -37,7 +37,7 @@ installer smoke test passed
 
 ## Deliberate boundaries and follow-up actions
 
-1. **No release has been published by this audit.** Push the commit to trigger GitHub Actions, then publish/tag only after the remote CI run is green.
+1. **No release asset has been published by this audit.** GitHub Actions quality-gate and Windows build-smoke passed for commit `968cddc`. Publish/tag only when the team chooses to release the assets.
 2. **Offline model packs are not bundled into the normal installer.** This is intentional. Generate them explicitly from local verified model folders and attach them as separate release assets when needed.
 3. **The installer is unsigned.** SmartScreen may warn. A code-signing certificate is a distribution enhancement, not a code defect.
 4. **The 13,000-file production run was not started.** This is a mandatory safety boundary, not an unfinished test. The application is designed for the user to run locally after reviewing the 20-file result.
@@ -45,4 +45,5 @@ installer smoke test passed
 ## Release decision
 
 **Local build gate: PASS.**
-**Remote publication gate: pending push and GitHub Actions result.**
+**Remote CI gate: PASS.**
+**Release-asset publication: awaiting an explicit version tag/release decision.**
