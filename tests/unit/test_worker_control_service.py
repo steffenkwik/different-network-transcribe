@@ -54,3 +54,47 @@ def test_pause_and_safe_stop_enqueue_commands_for_live_session(tmp_path: Path) -
     finally:
         check.close()
     assert commands == ["pause", "safe_stop"]
+
+
+def test_live_session_reports_paused_state_and_resume_command(tmp_path: Path) -> None:
+    database = tmp_path / "Database" / "test.sqlite3"
+    MigrationRunner(database, REPO_ROOT / "migrations", tmp_path / "Backups").migrate()
+    connection = open_connection(database)
+    try:
+        session = WorkerRepository(connection).acquire_lease("paused-control", 1)
+        WorkerRepository(connection).heartbeat(session, "paused")
+    finally:
+        connection.close()
+    service = WorkerControlService(database, tmp_path)
+    assert service.live_session() == (session, "paused")
+    service.resume()
+    check = open_connection(database, read_only=True)
+    try:
+        assert check.execute(
+            "SELECT command FROM worker_commands WHERE session_id = ?", (session,)
+        ).fetchone()[0] == "resume"
+    finally:
+        check.close()
+
+
+def test_retry_and_selected_reprocess_are_explicit_durable_commands(tmp_path: Path) -> None:
+    database = tmp_path / "Database" / "test.sqlite3"
+    MigrationRunner(database, REPO_ROOT / "migrations", tmp_path / "Backups").migrate()
+    connection = open_connection(database)
+    try:
+        session = WorkerRepository(connection).acquire_lease("explicit", 1)
+    finally:
+        connection.close()
+    service = WorkerControlService(database, tmp_path)
+    service.retry_failed()
+    service.reprocess_selected([12])
+    check = open_connection(database, read_only=True)
+    try:
+        rows = check.execute(
+            "SELECT command, payload_json FROM worker_commands WHERE session_id = ? ORDER BY id", (session,)
+        ).fetchall()
+        assert rows[0]["command"] == "retry_failed"
+        assert rows[1]["command"] == "reprocess_selected"
+        assert rows[1]["payload_json"] == '{"audio_file_ids": [12]}'
+    finally:
+        check.close()

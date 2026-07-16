@@ -9,13 +9,21 @@ import pytest
 
 from app.database.connection import open_connection
 from app.database.migrations import MigrationRunner
-from app.exports.exporters import ExportService
+from app.exports.exporters import ExportService, _safe_name
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 pytestmark = [pytest.mark.unit]
 
 
-def _seed(connection, timestamp: str | None, text: str, stable: str) -> None:
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("CON.opus", "_CON"), ("LPT1.opus", "_LPT1"), ("report. ", "report"), ("bad:name.opus", "bad_name")],
+)
+def test_individual_export_name_is_windows_safe(raw: str, expected: str) -> None:
+    assert _safe_name(raw) == expected
+
+
+def _seed(connection, timestamp: str | None, text: str, stable: str) -> int:
     root = connection.execute(
         "INSERT INTO source_roots(kind, original_path, normalized_path, created_at) VALUES ('audio','x','x-' || ?, 't')",
         (stable,),
@@ -49,6 +57,7 @@ def _seed(connection, timestamp: str | None, text: str, stable: str) -> None:
             "INSERT INTO metadata_matches(audio_file_id,chat_voice_reference_id,match_status,confidence,selected,created_at,updated_at) VALUES (?,?, 'exact_unique',1,1,'t','t')",
             (audio, ref),
         )
+    return int(audio)
 
 
 def test_exports_are_complete_deterministic_and_rebuildable(tmp_path: Path) -> None:
@@ -56,8 +65,18 @@ def test_exports_are_complete_deterministic_and_rebuildable(tmp_path: Path) -> N
     MigrationRunner(database, REPO_ROOT / "migrations", tmp_path / "Backups").migrate()
     connection = open_connection(database)
     try:
-        _seed(connection, "2026-07-15T20:31:00+07:00", "synthetic first", "one")
+        first_audio = _seed(connection, "2026-07-15T20:31:00+07:00", "synthetic first", "one")
         _seed(connection, None, "synthetic unknown", "two")
+        manual = connection.execute(
+            """INSERT INTO manual_transcripts(
+                   audio_file_id, text, verified, created_at, updated_at, selected_as_preferred_at, active)
+               VALUES (?, 'synthetic manual correction', 1, 't', 't', 't', 1)""",
+            (first_audio,),
+        ).lastrowid
+        connection.execute(
+            "UPDATE audio_files SET preferred_manual_transcript_id = ? WHERE id = ?",
+            (manual, first_audio),
+        )
         service = ExportService(connection, tmp_path / "Output")
         assert service.export_all(include_individual=True) == {"records": 2}
         audit = connection.execute(
@@ -79,6 +98,7 @@ def test_exports_are_complete_deterministic_and_rebuildable(tmp_path: Path) -> N
         service.export_all(include_individual=True)
         assert daily.read_bytes() == first
         assert "dnt-one" in daily.read_text(encoding="utf-8")
+        assert "synthetic manual correction" in daily.read_text(encoding="utf-8")
         assert (tmp_path / "Output" / "Markdown" / "Unknown-Date.md").exists()
         assert (
             tmp_path / "Output" / "Text" / "Daily" / "2026" / "2026-07" / "2026-07-15.txt"

@@ -65,18 +65,41 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
         log.error("worker has no configured audio root")
         return 4
     model_directory = paths.models_dir / cfg.transcription.default_model
+    registry = ModelRegistry(paths.models_dir)
     try:
-        ModelRegistry(paths.models_dir).verify(cfg.transcription.default_model, full_hash=False)
+        registry.verify(cfg.transcription.default_model, full_hash=False)
     except ModelError:
         _write_failed_status(paths, "Model tidak ditemukan atau rusak.")
         log.error("model missing", extra={"model": cfg.transcription.default_model})
         return 3
+    model_data = registry.read().get("models", {}).get(cfg.transcription.default_model, {})
+    model_hash = model_data.get("model_artifact_hash") if isinstance(model_data, dict) else None
+    attempt_settings: dict[str, object] = {
+        "language": cfg.transcription.language,
+        "task": cfg.transcription.task,
+        "compute_type": cfg.transcription.compute_type,
+        "beam_size": cfg.transcription.beam_size,
+        "temperature": cfg.transcription.temperature,
+        "vad_filter": cfg.transcription.vad_filter,
+        "condition_on_previous_text": cfg.transcription.condition_on_previous_text,
+    }
     worker = WorkerLoop(
         paths.database_file,
         instance_token,
-        FasterWhisperEngine(model_directory, language=cfg.transcription.language),
+        FasterWhisperEngine(
+            model_directory,
+            language=cfg.transcription.language,
+            beam_size=cfg.transcription.beam_size,
+            temperature=cfg.transcription.temperature,
+            vad_filter=cfg.transcription.vad_filter,
+            condition_on_previous_text=cfg.transcription.condition_on_previous_text,
+        ),
         paths.worker_status_file,
         Path(cfg.paths.audio_roots[0]),
+        model_name=cfg.transcription.default_model,
+        model_hash=str(model_hash) if model_hash else None,
+        language=cfg.transcription.language,
+        attempt_settings=attempt_settings,
     )
     try:
         worker.start()

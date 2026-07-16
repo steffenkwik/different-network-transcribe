@@ -52,6 +52,11 @@ class QueueService:
         ).fetchall()
         summary = QueuePreparation()
         for row in rows:
+            # A failed/no-speech attempt is not a blank record.  It must never
+            # silently become eligible again on an ordinary restart; retry is a
+            # distinct user command and preserves the previous attempt.
+            if row["current_state"] in {"failed", "no_speech"}:
+                continue
             source = Path(str(row["original_path"])) / str(row["current_relative_path"])
             exists = source.is_file()
             observed = sha256_file(source) if exists else None

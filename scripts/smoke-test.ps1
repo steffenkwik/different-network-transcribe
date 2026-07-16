@@ -63,6 +63,18 @@ function Test-Installer {
     }
     Start-DntProcess $exe "--engine-import-self-test" $true
     Start-DntProcess $exe ('--data-dir "' + $data + '" --self-test') $true
+    $database = Join-Path $data "Database\different_network_transcribe.sqlite3"
+    if (-not (Test-Path -LiteralPath $database)) {
+        throw "Smoke test tidak membuat database pengguna."
+    }
+    $beforeReinstall = (Get-FileHash -LiteralPath $database -Algorithm SHA256).Hash
+    # Re-run the installer into the same application folder.  User data lives
+    # elsewhere, so an update/reinstall must not alter it.
+    Start-DntProcess $setup ('/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR="' + $application + '"') $false
+    if (-not (Test-Path -LiteralPath $database) -or
+        (Get-FileHash -LiteralPath $database -Algorithm SHA256).Hash -ne $beforeReinstall) {
+        throw "Instal ulang mengubah data pengguna."
+    }
     $uninstaller = Join-Path $application "unins000.exe"
     if (-not (Test-Path -LiteralPath $uninstaller)) { throw "Uninstaller tidak ditemukan." }
     Start-DntProcess $uninstaller "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" $false

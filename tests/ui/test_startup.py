@@ -41,6 +41,24 @@ def test_worker_requires_data_dir_and_session() -> None:
     assert main(["--worker"]) == 2
 
 
+def test_first_run_wizard_collects_optional_folders(qtbot, tmp_path: Path) -> None:
+    from app.paths import DataPaths
+    from app.ui.launch import FirstRunWizard
+
+    wizard = FirstRunWizard(DataPaths(tmp_path / "data"))
+    qtbot.addWidget(wizard)
+    assert wizard.selected_data_root() == tmp_path / "data"
+    assert wizard.selected_audio_root() is None
+    assert wizard.selected_chat_root() is None
+
+
+def test_window_declares_a_safe_close_handler() -> None:
+    """A future UI refactor must not silently kill an active local worker."""
+    from app.ui.launch import MainWindow
+
+    assert "safe_stop_transcription" in MainWindow.closeEvent.__doc__ or "Never kill" in MainWindow.closeEvent.__doc__
+
+
 def test_engine_import_self_test_flag_is_available() -> None:
     from app.main import build_parser
 
@@ -59,3 +77,13 @@ def test_open_output_button_opens_the_app_owned_output_folder(qtbot, tmp_path: P
 
     assert paths.output_dir.is_dir()
     assert open_url.call_count == 1
+
+
+def test_safe_twenty_file_test_action_is_available(qtbot) -> None:
+    """The beginner-safe test path must never regress to a disabled placeholder."""
+    from app.ui.launch import MainWindow
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window.test_button.isEnabled()
+    assert "20" in window.test_button.toolTip()

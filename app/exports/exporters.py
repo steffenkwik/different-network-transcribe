@@ -66,6 +66,7 @@ class ExportService:
             SELECT a.stable_file_id, a.basename, a.current_relative_path, a.windows_created_at,
                    a.windows_modified_at, a.first_discovered_at, a.duration_seconds,
                    t.model_name, t.quality_status, t.normalized_transcript, t.raw_transcript,
+                   mt.text AS manual_transcript,
                    t.started_at, t.completed_at, t.safe_error_message,
                    COALESCE(o.sender, r.sender_original) AS sender,
                    COALESCE(o.chat, r.chat_original) AS chat,
@@ -74,6 +75,7 @@ class ExportService:
                    (SELECT COUNT(*) FROM transcription_attempts x WHERE x.audio_file_id = a.id) AS attempt_count
             FROM audio_files a
             JOIN transcription_attempts t ON t.id = a.preferred_transcript_id
+            LEFT JOIN manual_transcripts mt ON mt.id = a.preferred_manual_transcript_id
             LEFT JOIN manual_metadata_overrides o ON o.audio_file_id = a.id AND o.active = 1
             LEFT JOIN metadata_matches m ON m.audio_file_id = a.id AND m.selected = 1
             LEFT JOIN chat_voice_references r ON r.id = m.chat_voice_reference_id
@@ -97,7 +99,9 @@ class ExportService:
                 metadata_confidence=row["confidence"],
                 preferred_model=str(row["model_name"]),
                 quality_status=row["quality_status"],
-                preferred_transcript=str(row["normalized_transcript"] or row["raw_transcript"]),
+                preferred_transcript=str(
+                    row["manual_transcript"] or row["normalized_transcript"] or row["raw_transcript"]
+                ),
                 attempt_count=int(row["attempt_count"]),
                 processing_started_at=row["started_at"],
                 processing_completed_at=row["completed_at"],
@@ -295,4 +299,8 @@ class ExportService:
 
 def _safe_name(name: str) -> str:
     safe = "".join("_" if char in '<>:"/\\|?*' else char for char in Path(name).stem).rstrip(". ")
-    return (safe or "unknown")[:120]
+    safe = safe or "unknown"
+    reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)), *(f"LPT{n}" for n in range(1, 10))}
+    if safe.upper() in reserved:
+        safe = f"_{safe}"
+    return safe[:120]

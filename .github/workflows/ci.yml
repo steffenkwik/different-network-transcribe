@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, master]
 
 jobs:
   quality-gate:
@@ -24,7 +24,7 @@ jobs:
           python -m pip install -r requirements-lock.txt
 
       - name: Lint (ruff)
-        run: python -m ruff check app worker tests
+        run: python -m ruff check app worker tests scripts
 
       - name: Type check (mypy)
         run: python -m mypy app worker

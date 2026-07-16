@@ -67,3 +67,47 @@ def test_dashboard_counts_only_the_active_audio_folder(tmp_path: Path) -> None:
     service.save_audio_root(selected)
 
     assert service.dashboard_counts().total == 1
+
+
+def test_prepare_test_batch_rejects_more_than_twenty_sources(tmp_path: Path) -> None:
+    paths = DataPaths(tmp_path / "data")
+    paths.ensure()
+    service = ApplicationService(paths)
+    service.ensure_database()
+    source = tmp_path / "too-many"
+    source.mkdir()
+    for index in range(21):
+        (source / f"{index:02d}.opus").write_bytes(b"synthetic")
+
+    with pytest.raises(ValueError, match="lebih dari 20"):
+        service.prepare_test_batch(source)
+
+
+def test_manual_metadata_is_versioned_and_preserves_parser_source(tmp_path: Path) -> None:
+    paths = DataPaths(tmp_path / "data")
+    paths.ensure()
+    service = ApplicationService(paths)
+    service.ensure_database()
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "one.opus").write_bytes(b"not-real-audio")
+    service.save_audio_root(source)
+    service.scan_audio()
+    page = service.transcript_page(limit=10)
+    audio_id = int(page.rows[0]["id"])
+
+    service.save_manual_metadata(
+        audio_id,
+        sender="Synthetic Sender",
+        chat="Synthetic Chat",
+        whatsapp_message_at="2026-07-16T20:31:00+07:00",
+    )
+    service.save_manual_metadata(
+        audio_id,
+        sender="Synthetic Sender v2",
+        chat="Synthetic Chat",
+        whatsapp_message_at="2026-07-16T20:32:00+07:00",
+    )
+
+    detail = service.transcript_detail(audio_id)
+    assert detail["sender"] == "Synthetic Sender v2"

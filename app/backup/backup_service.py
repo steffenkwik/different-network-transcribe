@@ -28,10 +28,18 @@ def _sha256(path: Path) -> str:
 
 
 class BackupService:
-    def __init__(self, database_file: Path, backups_dir: Path, *, app_version: str) -> None:
+    def __init__(
+        self,
+        database_file: Path,
+        backups_dir: Path,
+        *,
+        app_version: str,
+        models_dir: Path | None = None,
+    ) -> None:
         self.database_file = database_file
         self.backups_dir = backups_dir
         self.app_version = app_version
+        self.models_dir = models_dir
 
     def create_package(
         self, *, config_file: Path | None = None, include_output: Path | None = None
@@ -42,9 +50,17 @@ class BackupService:
         with tempfile.TemporaryDirectory(prefix="dnt-backup-") as temp_name:
             temp = Path(temp_name)
             snapshot = backup_database(self.database_file, temp, label="database")
+            snapshot_connection = open_connection(snapshot, read_only=True)
+            try:
+                schema_version = int(
+                    snapshot_connection.execute("SELECT COALESCE(MAX(version), 0) FROM app_schema_migrations").fetchone()[0]
+                )
+            finally:
+                snapshot_connection.close()
             manifest: dict[str, Any] = {
                 "schema": 1,
                 "app_version": self.app_version,
+                "database_schema_version": schema_version,
                 "created_at": stamp,
                 "database_sha256": _sha256(snapshot),
                 "components": ["database"],
@@ -55,13 +71,35 @@ class BackupService:
                     archive.write(config_file, "Config/config.toml")
                     manifest["components"].append("config")
                 if include_output and include_output.is_dir():
+                    output_files: dict[str, str] = {}
                     for file in include_output.rglob("*"):
                         if file.is_file():
-                            archive.write(file, Path("Output") / file.relative_to(include_output))
+                            relative = file.relative_to(include_output).as_posix()
+                            archive.write(file, Path("Output") / relative)
+                            output_files[relative] = _sha256(file)
                     manifest["components"].append("output")
+                    manifest["output_manifest"] = output_files
+                if self.models_dir is not None:
+                    registry = self.models_dir / "registry.json"
+                    if registry.is_file():
+                        archive.write(registry, "Models/registry.json")
+                        manifest["components"].append("model_registry")
+                        manifest["model_registry_sha256"] = _sha256(registry)
+                manifest_bytes = json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
                 archive.writestr(
-                    "manifest.json", json.dumps(manifest, ensure_ascii=False, sort_keys=True)
+                    "manifest.json", manifest_bytes
                 )
+            manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+        connection = open_connection(self.database_file)
+        try:
+            connection.execute(
+                """INSERT INTO backups(created_at, backup_path, manifest_sha256,
+                   database_integrity_result, app_version, status)
+                   VALUES (?, ?, ?, 'ok', ?, 'completed')""",
+                (stamp, str(package), manifest_sha256, self.app_version),
+            )
+        finally:
+            connection.close()
         return package
 
     def restore_package(self, package: Path, destination_database: Path) -> None:
@@ -83,6 +121,8 @@ class BackupService:
             if not manifest_file.is_file() or not database.is_file():
                 raise BackupError("Paket backup tidak lengkap.")
             manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict) or manifest.get("schema") != 1:
+                raise BackupError("Manifest backup tidak didukung.")
             if manifest.get("database_sha256") != _sha256(database):
                 raise BackupError("Checksum database backup tidak cocok.")
             connection = open_connection(database)

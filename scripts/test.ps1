@@ -23,7 +23,7 @@ if (-not (Test-Path $python)) {
 }
 
 Write-Host "== ruff ==" -ForegroundColor Cyan
-& $python -m ruff check app worker tests
+& $python -m ruff check app worker tests scripts
 if ($LASTEXITCODE -ne 0) { throw "ruff gagal" }
 
 Write-Host "== mypy ==" -ForegroundColor Cyan

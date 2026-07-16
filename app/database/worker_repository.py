@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import timedelta
@@ -9,6 +10,7 @@ from datetime import timedelta
 from app.database.connection import transaction
 from app.database.repositories import now
 from app.transcription.engine import EngineResult
+from app.transcription.quality import QualityVerdict
 
 LIVE_STATES = {"idle", "starting", "running", "pausing", "paused", "stopping"}
 
@@ -122,10 +124,44 @@ class WorkerRepository:
                 )
         return len(rows)
 
-    def claim_next(self, session_id: int, active_root: str | None = None) -> sqlite3.Row | None:
+    def requeue_failed(self, active_root: str | None = None) -> int:
+        """Retry only explicitly failed rows; completed rows are never touched."""
+        with transaction(self.connection, immediate=True):
+            rows = self.connection.execute(
+                """SELECT a.id FROM audio_files AS a
+                   JOIN source_roots AS s ON s.id = a.source_root_id
+                   WHERE a.current_state = 'failed' AND a.readable = 1 AND a.zero_byte = 0
+                     AND (? IS NULL OR s.original_path = ?)""",
+                (active_root, active_root),
+            ).fetchall()
+            for row in rows:
+                audio_file_id = int(row["id"])
+                self.connection.execute(
+                    "UPDATE audio_files SET current_state = 'queued', updated_at = ? WHERE id = ?",
+                    (now(), audio_file_id),
+                )
+                self.connection.execute(
+                    """INSERT INTO processing_events(audio_file_id, event_type, event_at, details_json)
+                       VALUES (?, 'manual_retry_requested', ?, '{}')""",
+                    (audio_file_id, now()),
+                )
+        return len(rows)
+
+    def claim_next(
+        self,
+        session_id: int,
+        active_root: str | None = None,
+        *,
+        model_name: str = "small",
+        model_hash: str | None = None,
+        language: str = "id",
+        settings: dict[str, object] | None = None,
+        engine_version: str = "1.1.1",
+    ) -> sqlite3.Row | None:
         with transaction(self.connection, immediate=True):
             audio = self.connection.execute(
-                """SELECT a.*, v.id AS source_version_id, s.original_path AS source_root_path FROM audio_files a
+                """SELECT a.*, v.id AS source_version_id, v.sha256 AS source_sha256,
+                          s.original_path AS source_root_path FROM audio_files a
                    JOIN audio_source_versions v ON v.id = a.current_source_version_id
                    JOIN source_roots s ON s.id = a.source_root_id
                    WHERE a.current_state = 'queued' AND a.readable = 1 AND a.zero_byte = 0
@@ -141,13 +177,38 @@ class WorkerRepository:
                     (audio["id"],),
                 ).fetchone()[0]
             )
+            attempt_settings = settings or {
+                "language": language,
+                "task": "transcribe",
+                "compute_type": "int8",
+                "beam_size": 5,
+                "temperature": 0.0,
+                "vad_filter": True,
+                "condition_on_previous_text": False,
+            }
+            compatibility = {
+                "engine_name": "faster-whisper",
+                "engine_version": engine_version,
+                "model_name": model_name,
+                "model_artifact_hash": model_hash,
+                **attempt_settings,
+                "source_sha256": str(audio["source_sha256"]),
+            }
+            compat_key = hashlib.sha256(
+                json.dumps(compatibility, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
             cursor = self.connection.execute(
                 """INSERT INTO transcription_attempts(
                     audio_file_id, source_version_id, worker_session_id, model_name, model_hash,
                     engine_name, engine_version, language, settings_json, compat_key,
                     attempt_number, state, started_at, created_at)
-                   VALUES (?, ?, ?, 'small', NULL, 'faster-whisper', 'local', 'id', '{}', 'pending', ?, 'processing', ?, ?)""",
-                (audio["id"], audio["source_version_id"], session_id, attempt_number, now(), now()),
+                   VALUES (?, ?, ?, ?, ?, 'faster-whisper', ?, ?, ?, ?, ?, 'processing', ?, ?)""",
+                (
+                    audio["id"], audio["source_version_id"], session_id, model_name, model_hash,
+                    engine_version, language,
+                    json.dumps(attempt_settings, sort_keys=True, separators=(",", ":")),
+                    compat_key, attempt_number, now(), now(),
+                ),
             )
             self.connection.execute(
                 "UPDATE audio_files SET current_state = 'processing', updated_at = ? WHERE id = ?",
@@ -159,12 +220,19 @@ class WorkerRepository:
                 (cursor.lastrowid, audio["id"]),
             ).fetchone()
 
-    def complete_attempt(self, attempt_id: int, audio_file_id: int, result: EngineResult) -> None:
+    def complete_attempt(
+        self,
+        attempt_id: int,
+        audio_file_id: int,
+        result: EngineResult,
+        quality: QualityVerdict,
+    ) -> None:
         with transaction(self.connection, immediate=True):
+            attempt_state = "no_speech" if quality.no_speech else "completed"
             self.connection.execute(
                 """UPDATE transcription_attempts SET state = 'completed', completed_at = ?, raw_transcript = ?,
                    normalized_transcript = ?, segment_json = ?, detected_language = ?, language_probability = ?,
-                   quality_status = 'Baik', quality_score = 1.0 WHERE id = ?""",
+                   quality_status = ?, quality_score = ?, quality_reasons_json = ? WHERE id = ?""",
                 (
                     now(),
                     result.raw_transcript,
@@ -172,13 +240,34 @@ class WorkerRepository:
                     result.segment_json,
                     result.detected_language,
                     result.language_probability,
+                    quality.status,
+                    quality.score,
+                    json.dumps(quality.reasons),
                     attempt_id,
                 ),
             )
+            if quality.no_speech:
+                self.connection.execute(
+                    "UPDATE transcription_attempts SET state = ? WHERE id = ?", (attempt_state, attempt_id)
+                )
+                self.connection.execute(
+                    "UPDATE audio_files SET current_state = 'no_speech', updated_at = ? WHERE id = ?",
+                    (now(), audio_file_id),
+                )
+                return
             self.connection.execute(
                 """UPDATE audio_files SET current_state = 'completed_preferred', preferred_transcript_id = ?,
                    updated_at = ? WHERE id = ?""",
                 (attempt_id, now(), audio_file_id),
+            )
+            self.connection.execute(
+                "INSERT OR REPLACE INTO transcript_fts(rowid, text) VALUES (?, ?)",
+                (audio_file_id, result.normalized_transcript or result.raw_transcript),
+            )
+            self.connection.execute(
+                """INSERT INTO transcript_fts_map(rowid, audio_file_id) VALUES (?, ?)
+                   ON CONFLICT(audio_file_id) DO UPDATE SET rowid = excluded.rowid""",
+                (audio_file_id, audio_file_id),
             )
 
     def fail_attempt(self, attempt_id: int, audio_file_id: int, error_type: str) -> None:

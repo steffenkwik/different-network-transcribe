@@ -33,11 +33,20 @@ if ($LASTEXITCODE -ne 0) { throw "Inno Setup gagal" }
 
 New-Item -ItemType Directory -Force release | Out-Null
 Compress-Archive -Path dist\DifferentNetworkTranscribe\* -DestinationPath release\DifferentNetworkTranscribe-Portable-x64.zip -Force
-Get-ChildItem release -File |
-    Where-Object { $_.Name -ne "SHA256SUMS.txt" } |
-    Get-FileHash -Algorithm SHA256 |
-    ForEach-Object { "{0}  {1}" -f $_.Hash, $_.Path.Name } |
-    Set-Content release\SHA256SUMS.txt -Encoding utf8
+$hashLines = @(
+    Get-ChildItem release -File |
+        Where-Object { $_.Name -ne "SHA256SUMS.txt" } |
+        ForEach-Object {
+            $artifact = $_
+            $hash = (Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash
+            [System.String]::Format("{0}  {1}", $hash, $artifact.Name)
+        }
+)
+$invalidHashLines = @($hashLines | Where-Object { $_ -notmatch '^[0-9A-F]{64}  \S+$' })
+if ($hashLines.Count -eq 0 -or $invalidHashLines.Count -ne 0) {
+    throw "Manifest SHA256SUMS tidak valid."
+}
+$hashLines | Set-Content release\SHA256SUMS.txt -Encoding utf8
 
 if (-not $SkipSmokeTest) {
     & "$PSScriptRoot\smoke-test.ps1" -Artifact All

@@ -13,16 +13,19 @@ langsung untuk pengujian awal.
 
 ## Menjalankan test
 
-1. Buka **Different Network Transcribe**.
-2. Klik **Pengaturan & Data**.
-3. Klik **Pilih Folder Audio**, pilih `D:\VN-Test-20`, lalu klik **Simpan Folder Audio**.
-4. Klik **Beranda** lalu **Scan File Baru**.
-5. Pastikan pesan scan menyebut `20 file baru` (pada scan pertama) dan kartu **Total VN** menampilkan `20`.
-   Kartu tersebut hanya menghitung folder audio aktif; scan lama dari folder lain tidak ikut dihitung atau diproses.
-   Jika bukan 20, berhenti dan periksa folder test.
-6. Klik **Mulai / Lanjutkan**. Status worker dan progress bar harus berubah dari *Memulai worker* menjadi
+1. Buka **Different Network Transcribe** dan pilih **Beranda**.
+2. Klik **Tes Maksimal 20 VN**.
+3. Pilih folder `D:\VN-Test-20` yang tadi dibuat. Aplikasi menghitung isi folder dulu.
+   - Bila isi folder 1–20 audio, aplikasi menjadikannya folder aktif dan memulai scan.
+   - Bila lebih dari 20 audio, aplikasi menolak folder itu. Tidak ada file sumber yang diubah;
+     kembali ke langkah persiapan dan buat folder salinan yang lebih kecil.
+4. Tunggu pesan **Folder uji aman aktif**. Pastikan kartu **Total VN** menampilkan jumlah yang sama dengan
+   folder uji (pada contoh ini `20`). Kartu hanya menghitung folder audio aktif; scan lama dari folder lain
+   tidak ikut diproses.
+5. Klik **Mulai / Lanjutkan**. Status worker dan progress bar harus berubah dari *Memulai worker* menjadi
    *running*, lalu selesai/idle. Jangan tutup aplikasi saat proses berjalan.
-7. Setelah selesai, klik **Buat Hasil**. Hasil ada di folder data aplikasi pada `Output`.
+6. Setelah selesai, klik **Buat Hasil**, lalu klik **Buka Folder Hasil**. Windows Explorer akan membuka
+   folder hasil yang aman untuk dibaca. Jangan mencari hasil di folder sumber audio.
 
 ## Verifikasi no-repeat
 
@@ -32,7 +35,9 @@ langsung untuk pengujian awal.
 
 ## Jika ada masalah
 
-- **Model tidak ditemukan atau rusak:** kembali ke Pengaturan dan impor/unduh model Small.
+- **Model tidak ditemukan atau rusak:** buka **Pengaturan & Data**, lalu gunakan **Unduh Model** atau
+  **Impor Model ZIP**. Pilih `small` bila ragu. Download hanya mengambil bobot model ke komputer ini;
+  audio dan chat export tidak dikirim.
 - **Worker langsung idle:** pastikan Total VN = 20 setelah scan dan file `.opus` dapat dibaca.
 - **Progress tidak bergerak selama beberapa menit:** klik Berhenti Aman, tutup aplikasi, lalu kirim screenshot status
   worker dan halaman Beranda. Jangan menghapus database atau file sumber.

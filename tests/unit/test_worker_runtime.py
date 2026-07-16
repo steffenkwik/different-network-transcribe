@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,12 @@ class FakeEngine:
         return EngineResult(
             raw_transcript=f"synthetic {path.name}", normalized_transcript=f"synthetic {path.name}"
         )
+
+
+class SlowEngine(FakeEngine):
+    def transcribe(self, path: Path) -> EngineResult:
+        time.sleep(1.1)
+        return super().transcribe(path)
 
 
 @pytest.fixture
@@ -93,6 +100,42 @@ def test_model_loads_once_and_completes_each_file(database) -> None:
         ).fetchone()[0]
         == 2
     )
+    assert connection.execute(
+        "SELECT COUNT(*) FROM transcript_fts_map WHERE audio_file_id IN (SELECT id FROM audio_files)"
+    ).fetchone()[0] == 2
+    assert connection.execute(
+        "SELECT COUNT(*) FROM transcript_fts WHERE transcript_fts MATCH 'synthetic'"
+    ).fetchone()[0] == 2
+    worker.close()
+
+
+def test_attempt_keeps_selected_model_settings_and_compatibility_provenance(database) -> None:
+    path, connection = database
+    worker = WorkerLoop(
+        path,
+        "medium-provenance",
+        FakeEngine(),
+        model_name="medium",
+        model_hash="model-hash",
+        language="auto",
+        attempt_settings={
+            "language": "auto",
+            "task": "transcribe",
+            "compute_type": "int8",
+            "beam_size": 5,
+            "temperature": 0.0,
+            "vad_filter": True,
+            "condition_on_previous_text": False,
+        },
+    )
+    worker.start()
+    assert worker.run_one() is True
+    row = connection.execute(
+        "SELECT model_name, model_hash, language, settings_json, compat_key FROM transcription_attempts"
+    ).fetchone()
+    assert tuple(row[:3]) == ("medium", "model-hash", "auto")
+    assert json.loads(row[3])["beam_size"] == 5
+    assert len(str(row[4])) == 64
     worker.close()
 
 
@@ -168,6 +211,26 @@ def test_bad_file_fails_but_next_file_continues(database) -> None:
     worker.close()
 
 
+def test_explicit_retry_failed_requeues_only_failed_records(database) -> None:
+    path, connection = database
+    first = WorkerLoop(path, "fail-then-retry", FakeEngine(fail_first=True))
+    first.start()
+    assert first.run_one() is True
+    first.close()
+    failed_id = int(
+        connection.execute("SELECT id FROM audio_files WHERE current_state = 'failed'").fetchone()[0]
+    )
+    second = WorkerLoop(path, "retry", FakeEngine())
+    retry_session = second.start()
+    command = WorkerRepository(connection).enqueue_command(retry_session, "retry_failed")
+    assert second.run_one() is True
+    assert connection.execute(
+        "SELECT COUNT(*) FROM transcription_attempts WHERE audio_file_id = ?", (failed_id,)
+    ).fetchone()[0] == 2
+    assert connection.execute("SELECT result FROM worker_commands WHERE id = ?", (command,)).fetchone()[0] == "requeued_failed:1"
+    second.close()
+
+
 def test_active_root_guard_never_claims_queued_audio_from_another_folder(database) -> None:
     """A user testing one folder must never start an old, wider queue by accident."""
     path, connection = database
@@ -233,18 +296,44 @@ def test_safe_stop_releases_lease_without_claiming_new_work(database) -> None:
 
 def test_pause_then_resume_does_not_claim_work_while_paused(database) -> None:
     path, connection = database
-    worker = WorkerLoop(path, "session-pause", FakeEngine())
+    status_file = path.parent / "worker-status.json"
+    worker = WorkerLoop(path, "session-pause", FakeEngine(), status_file=status_file)
     session_id = worker.start()
     repository = WorkerRepository(connection)
     repository.enqueue_command(session_id, "pause")
     assert worker.run_one() is False
     assert worker.paused is True
+    assert json.loads(status_file.read_text(encoding="utf-8"))["state"] == "paused"
     assert connection.execute("SELECT COUNT(*) FROM transcription_attempts").fetchone()[0] == 0
     repository.enqueue_command(session_id, "resume")
     assert worker.run_one() is False
     assert worker.paused is False
     assert worker.run_one() is True
     worker.close()
+
+
+def test_heartbeat_stays_fresh_while_local_inference_is_running(database) -> None:
+    path, connection = database
+    seen: list[str] = []
+
+    class ObservingEngine(SlowEngine):
+        def transcribe(self, source: Path) -> EngineResult:
+            time.sleep(1.0)
+            reader = open_connection(path, read_only=True)
+            try:
+                seen.append(str(reader.execute("SELECT heartbeat_at FROM worker_sessions").fetchone()[0]))
+            finally:
+                reader.close()
+            return super().transcribe(source)
+
+    worker = WorkerLoop(path, "heartbeat", ObservingEngine(), heartbeat_interval_seconds=0.05)
+    session_id = worker.start()
+    before = str(
+        connection.execute("SELECT heartbeat_at FROM worker_sessions WHERE id = ?", (session_id,)).fetchone()[0]
+    )
+    assert worker.run_one() is True
+    worker.close()
+    assert seen and seen[0] > before
 
 
 def test_stale_processing_attempt_is_interrupted_and_only_that_audio_requeued(database) -> None:

@@ -109,7 +109,12 @@ def test_initial_migration_creates_every_required_table(migrated_database: Path)
             "transcript_fts_map",
         }
         assert expected <= _tables(connection)
-        assert connection.execute("SELECT COUNT(*) FROM app_schema_migrations").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM app_schema_migrations").fetchone()[0] == 4
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(audio_files)")
+        }
+        assert "preferred_manual_transcript_id" in columns
         assert quick_check(connection) == "ok"
     finally:
         connection.close()
@@ -120,7 +125,7 @@ def test_migration_is_idempotent_and_backs_up_existing_schema(
 ) -> None:
     database_file, backups_dir = database_paths
     runner = MigrationRunner(database_file, MIGRATIONS, backups_dir)
-    assert [item.version for item in runner.migrate()] == [1, 2]
+    assert [item.version for item in runner.migrate()] == [1, 2, 3, 4]
     assert runner.migrate() == []
     # Simulate a future database at 0001 and prove the runner snapshots it
     # before applying the pending 0002 migration.
@@ -219,6 +224,61 @@ def test_fts5_is_available_and_searchable(migrated_database: Path) -> None:
         assert [row["rowid"] for row in found] == [1]
     finally:
         connection.close()
+
+
+def test_fts_backfill_migration_indexes_existing_preferred_transcript(
+    database_paths: tuple[Path, Path], tmp_path: Path
+) -> None:
+    database_file, backups_dir = database_paths
+    legacy_migrations = tmp_path / "legacy-migrations"
+    shutil.copytree(MIGRATIONS, legacy_migrations)
+    (legacy_migrations / "0004_backfill_transcript_fts.sql").unlink()
+    MigrationRunner(database_file, legacy_migrations, backups_dir).migrate()
+    connection = open_connection(database_file)
+    try:
+        root = _insert_root(connection)
+        audio = int(
+            connection.execute(
+                """INSERT INTO audio_files(stable_file_id, source_root_id, current_relative_path, basename,
+                   normalized_basename, extension, size_bytes, first_discovered_at, last_seen_at, current_state,
+                   created_at, updated_at) VALUES ('fts-audio', ?, 'a.opus', 'a.opus', 'a.opus', '.opus', 1,
+                   't', 't', 'completed_preferred', 't', 't')""",
+                (root,),
+            ).lastrowid
+        )
+        version = int(
+            connection.execute(
+                "INSERT INTO audio_source_versions(audio_file_id, size_bytes, sha256, discovered_at) VALUES (?, 1, 'fts', 't')",
+                (audio,),
+            ).lastrowid
+        )
+        attempt = int(
+            connection.execute(
+                """INSERT INTO transcription_attempts(audio_file_id, source_version_id, model_name, engine_name,
+                   engine_version, language, settings_json, compat_key, attempt_number, state,
+                   normalized_transcript, created_at) VALUES (?, ?, 'small', 'fw', '1', 'id', '{}', 'k', 1,
+                   'completed', 'pencarian khusus', 't')""",
+                (audio, version),
+            ).lastrowid
+        )
+        connection.execute(
+            "UPDATE audio_files SET current_source_version_id = ?, preferred_transcript_id = ? WHERE id = ?",
+            (version, attempt, audio),
+        )
+    finally:
+        connection.close()
+    assert [item.version for item in MigrationRunner(database_file, MIGRATIONS, backups_dir).migrate()] == [4]
+    indexed = open_connection(database_file, read_only=True)
+    try:
+        assert indexed.execute(
+            "SELECT COUNT(*) FROM transcript_fts WHERE transcript_fts MATCH 'khusus'"
+        ).fetchone()[0] == 1
+        assert indexed.execute("SELECT audio_file_id FROM transcript_fts_map").fetchone()[0] == audio
+        page = TranscriptRepository(indexed).list_page(limit=10, transcript_query="khusus")
+        assert page.total == 1
+        assert int(page.rows[0]["id"]) == audio
+    finally:
+        indexed.close()
 
 
 @pytest.mark.perf

@@ -5,6 +5,9 @@ on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -32,3 +35,10 @@ jobs:
         with:
           name: DifferentNetworkTranscribe-Windows
           path: release/
+      - name: Publish GitHub Release for the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ github.ref_name }}" release/*
+          --title "Different Network Transcribe ${{ github.ref_name }}"
+          --generate-notes

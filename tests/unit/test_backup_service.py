@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -32,6 +34,28 @@ def test_package_restore_uses_consistent_database_snapshot(tmp_path: Path) -> No
         )
     finally:
         restored.close()
+
+
+def test_backup_manifest_records_schema_components_and_audit(tmp_path: Path) -> None:
+    source = tmp_path / "source" / "Database" / "test.sqlite3"
+    MigrationRunner(source, REPO_ROOT / "migrations", tmp_path / "source" / "Backups").migrate()
+    output = tmp_path / "source" / "Output"
+    output.mkdir(parents=True)
+    (output / "example.md").write_text("synthetic", encoding="utf-8")
+    models = tmp_path / "source" / "Models"
+    models.mkdir(parents=True)
+    (models / "registry.json").write_text("{}", encoding="utf-8")
+    service = BackupService(source, tmp_path / "backups", app_version="0.1.0", models_dir=models)
+    package = service.create_package(include_output=output)
+    with zipfile.ZipFile(package) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+    assert manifest["database_schema_version"] == 4
+    assert {"database", "output", "model_registry"} <= set(manifest["components"])
+    connection = open_connection(source, read_only=True)
+    try:
+        assert connection.execute("SELECT status FROM backups").fetchone()[0] == "completed"
+    finally:
+        connection.close()
 
 
 def test_restore_rejects_incomplete_package(tmp_path: Path) -> None:

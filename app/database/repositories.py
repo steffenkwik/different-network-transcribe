@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from app.database.connection import transaction
@@ -62,27 +64,85 @@ class TranscriptRepository:
         offset: int = 0,
         state: str | None = None,
         basename_query: str | None = None,
+        metadata_query: str | None = None,
+        transcript_query: str | None = None,
+        quality_status: str | None = None,
+        model_name: str | None = None,
+        match_status: str | None = None,
+        whatsapp_date: str | None = None,
+        sort: str = "whatsapp_asc",
+        source_root: Path | None = None,
+        review_only: bool = False,
     ) -> TranscriptListPage:
         conditions: list[str] = []
         params: list[object] = []
         if state is not None:
-            conditions.append("current_state = ?")
+            conditions.append("v.current_state = ?")
             params.append(state)
         if basename_query:
-            conditions.append("normalized_basename LIKE ?")
+            conditions.append("v.normalized_basename LIKE ?")
             params.append(f"%{basename_query.casefold()}%")
+        if metadata_query:
+            conditions.append(
+                "(v.normalized_basename LIKE ? OR lower(COALESCE(v.sender, '')) LIKE ? "
+                "OR lower(COALESCE(v.chat, '')) LIKE ?)"
+            )
+            query = f"%{metadata_query.casefold()}%"
+            params.extend((query, query, query))
+        if transcript_query:
+            fts_query = _safe_fts_query(transcript_query)
+            if fts_query:
+                conditions.append("fts.text MATCH ?")
+                params.append(fts_query)
+        if quality_status:
+            conditions.append("v.quality_status = ?")
+            params.append(quality_status)
+        if model_name:
+            conditions.append("v.model_name = ?")
+            params.append(model_name)
+        if match_status:
+            conditions.append("v.match_status = ?")
+            params.append(match_status)
+        if whatsapp_date:
+            conditions.append("substr(v.whatsapp_message_at, 1, 10) = ?")
+            params.append(whatsapp_date)
+        if source_root is not None:
+            conditions.append("s.original_path = ?")
+            params.append(str(source_root.resolve()))
+        if review_only:
+            conditions.append(
+                "(v.current_state IN ('failed', 'missing_source', 'stale_source_changed') "
+                "OR COALESCE(v.match_status, '') IN "
+                "('exact_ambiguous', 'filename_not_present', 'unmatched') "
+                "OR COALESCE(v.quality_status, '') IN ('Perlu Diperiksa', 'Gagal'))"
+            )
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        source = (
+            " FROM v_transcript_list AS v "
+            "JOIN audio_files AS a ON a.id = v.id "
+            "JOIN source_roots AS s ON s.id = a.source_root_id"
+        )
+        if transcript_query and _safe_fts_query(transcript_query):
+            source += " JOIN transcript_fts_map AS fm ON fm.audio_file_id = v.id"
+            source += " JOIN transcript_fts AS fts ON fts.rowid = fm.rowid"
         total = int(
             self.connection.execute(
-                f"SELECT COUNT(*) FROM v_transcript_list{where}", params
+                f"SELECT COUNT(*){source}{where}", params
             ).fetchone()[0]
         )
+        order_by = {
+            "whatsapp_asc": "v.whatsapp_message_at IS NULL, v.whatsapp_message_at, v.stable_file_id",
+            "whatsapp_desc": "v.whatsapp_message_at IS NULL, v.whatsapp_message_at DESC, v.stable_file_id",
+            "filename": "v.normalized_basename, v.stable_file_id",
+            "processed_desc": "v.last_processed_at IS NULL, v.last_processed_at DESC, v.stable_file_id",
+        }.get(sort, "v.whatsapp_message_at IS NULL, v.whatsapp_message_at, v.stable_file_id")
         rows = self.connection.execute(
-            "SELECT id, stable_file_id, current_state, basename, duration_seconds, sender, chat, "
-            "whatsapp_message_at, metadata_manually_corrected, match_status, confidence, model_name, "
-            "quality_status, last_processed_at "
-            f"FROM v_transcript_list{where} "
-            "ORDER BY whatsapp_message_at IS NULL, whatsapp_message_at, stable_file_id LIMIT ? OFFSET ?",
+            "SELECT v.id, v.stable_file_id, v.current_state, v.basename, v.duration_seconds, v.sender, "
+            "v.chat, v.whatsapp_message_at, v.metadata_manually_corrected, v.match_status, "
+            "v.confidence, v.model_name, v.quality_status, v.last_processed_at "
+            f"{source}{where} "
+            f"ORDER BY {order_by} "
+            "LIMIT ? OFFSET ?",
             [*params, limit, offset],
         ).fetchall()
         return TranscriptListPage(rows=rows, total=total)
@@ -92,13 +152,26 @@ class TranscriptRepository:
         return self.connection.execute(
             """
             SELECT a.id, a.stable_file_id, a.basename, t.raw_transcript, t.normalized_transcript,
-                   t.segment_json, t.model_name, t.quality_status, t.completed_at
+                   mt.text AS manual_transcript, t.segment_json, t.model_name, t.quality_status,
+                   t.completed_at,
+                   COALESCE(o.sender, r.sender_original) AS sender,
+                   COALESCE(o.chat, r.chat_original) AS chat,
+                   COALESCE(o.whatsapp_message_at, r.whatsapp_message_at) AS whatsapp_message_at
             FROM audio_files a
             LEFT JOIN transcription_attempts t ON t.id = a.preferred_transcript_id
+            LEFT JOIN manual_transcripts mt ON mt.id = a.preferred_manual_transcript_id
+            LEFT JOIN manual_metadata_overrides o ON o.audio_file_id = a.id AND o.active = 1
+            LEFT JOIN metadata_matches m ON m.audio_file_id = a.id AND m.selected = 1
+            LEFT JOIN chat_voice_references r ON r.id = m.chat_voice_reference_id
             WHERE a.id = ?
             """,
             (audio_file_id,),
         ).fetchone()
+
+
+def _safe_fts_query(value: str) -> str:
+    """Turn free-form UI input into literal FTS terms, not FTS syntax."""
+    return " ".join(re.findall(r"\w+", value, flags=re.UNICODE))
 
 
 class AudioRepository:

@@ -25,9 +25,22 @@ class TranscriptionEngine(Protocol):
 class FasterWhisperEngine:
     """CPU-only adapter. Model loading is explicit and happens exactly once per worker."""
 
-    def __init__(self, model_directory: Path, *, language: str = "id") -> None:
+    def __init__(
+        self,
+        model_directory: Path,
+        *,
+        language: str = "id",
+        beam_size: int = 5,
+        temperature: float = 0.0,
+        vad_filter: bool = True,
+        condition_on_previous_text: bool = False,
+    ) -> None:
         self.model_directory = model_directory
         self.language = language
+        self.beam_size = beam_size
+        self.temperature = temperature
+        self.vad_filter = vad_filter
+        self.condition_on_previous_text = condition_on_previous_text
         self._model: Any | None = None
 
     def load(self) -> None:
@@ -45,10 +58,10 @@ class FasterWhisperEngine:
             str(path),
             language=None if self.language == "auto" else self.language,
             task="transcribe",
-            beam_size=5,
-            temperature=0.0,
-            vad_filter=True,
-            condition_on_previous_text=False,
+            beam_size=self.beam_size,
+            temperature=self.temperature,
+            vad_filter=self.vad_filter,
+            condition_on_previous_text=self.condition_on_previous_text,
         )
         parts = [segment.text.strip() for segment in segments]
         text = " ".join(part for part in parts if part)
