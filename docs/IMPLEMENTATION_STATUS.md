@@ -1,7 +1,7 @@
 # Implementation Status
 
 **App version:** 0.2.0
-**Updated:** 2026-07-16 — post-audit Different Network UX refresh; remote CI verified
+**Updated:** 2026-07-16 — v0.2.0 public release published
 **Evidence convention:** `Tested` means an automated gate or explicitly recorded limited local test has passed. `Implemented` means the code/workflow exists but needs an external publication or CI action.
 
 ## Phase progress
@@ -70,13 +70,13 @@ derived formats                Markdown, TXT, CSV, JSONL present
 
 ## Distribution follow-up
 
-- GitHub Actions quality-gate and Windows build-smoke passed for the post-audit UI refresh at commit `44bd0f9` (run `29497575364`).
+- GitHub Actions quality-gate and Windows build-smoke passed for the post-audit UI refresh at commit `44bd0f9` (run `29497575364`). The public [v0.2.0 release](https://github.com/steffenkwik/different-network-transcribe/releases/tag/v0.2.0) now includes the smoke-tested installer, portable ZIP, and checksum manifest.
 - Model packs are generated only by the explicit local `scripts/build_model_packs.py` command. Model weights stay ignored and are never included in the normal installer or Git history.
 - The installer is unsigned. Windows SmartScreen warning remains an accepted, documented release risk.
 
 ## Post-audit UX refresh
 
-- `docs/BRAND_GUIDELINES.md` is the visual source of truth: black-dominant surfaces, accessible yellow primary action, orange controlled-attention action, and native vector DN product mark.
+- `docs/BRAND_GUIDELINES.md` is the visual source of truth: black-dominant surfaces, DN orange primary action, chilli red-orange controlled-attention action, and the official DN product mark.
 - **Siapkan & Mulai Transkripsi** now opens a preflight dialog. It requires a locally installed Small/Medium choice, exposes a bounded file checklist, persists exclusions, and defaults to a batch of at most 20 files.
 - Processing an entire incomplete collection remains possible only after a separate bulk opt-in and acknowledgement. A restart, re-scan, or settings change cannot silently re-enable excluded files.
 

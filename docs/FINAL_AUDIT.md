@@ -1,4 +1,4 @@
-# Final Audit — v0.1.0 Build Candidate
+# Final Audit — v0.2.0 Release
 
 **Audited:** 2026-07-16 (local gate + remote CI verified)
 **Scope:** all implemented phases, post-audit Different Network UI/UX refresh, final source quality gate, fresh Windows packaging, smoke test, and recorded limited real-data test.
@@ -6,11 +6,11 @@
 
 ## Result
 
-The build candidate is ready to commit and push. Its installer and portable ZIP were rebuilt from the current source and smoke-tested. The 20-file local test remains the only real-data execution recorded; there is no corpus-wide transcription.
+The public v0.2.0 release is published. Its installer and portable ZIP were rebuilt from the current source, smoke-tested, checksum-verified, and uploaded as GitHub Release assets. The 20-file local test remains the only real-data execution recorded; there is no corpus-wide transcription.
 
 ## v0.2.0 addendum
 
-The versioned build adds official DN Academy branding (logo, palette, and licensed typography), an opt-in local High model, and safe multi-row transcript-history deletion. `143` synthetic tests, ruff, mypy, private-data release scanning, and portable/installer smoke tests passed. The public GitHub release is published by the `v0.2.0` tag workflow.
+The versioned build adds official DN Academy branding (logo, palette, and licensed typography), an opt-in local High model, and safe multi-row transcript-history deletion. `143` synthetic tests, ruff, mypy, private-data release scanning, and portable/installer smoke tests passed. The public [v0.2.0 GitHub Release](https://github.com/steffenkwik/different-network-transcribe/releases/tag/v0.2.0) contains the installer, portable ZIP, and checksum manifest.
 
 ## Passed requirements
 
@@ -23,7 +23,7 @@ The versioned build adds official DN Academy branding (logo, palette, and licens
 | Worker reliability | Pass | Separate Qt-free process, lease, stale recovery, pause/resume/safe stop, retry/reprocess commands |
 | Transcript provenance | Pass | Attempt stores selected model, model hash, engine/settings compatibility key and source hash |
 | Exports | Pass | Atomic Markdown/TXT/CSV/JSONL outputs; manual preferred text; deterministic rebuild |
-| UI | Pass | Indonesian four-section UI, native DN mark, black/yellow/orange design system, accessible focus state, model-and-file preflight, filtering/pagination, review/detail editing/playback |
+| UI | Pass | Indonesian four-section UI, official DN mark, black/orange/chilli design system, bundled Academy typography, accessible focus state, model-and-file preflight, filtering/pagination, review/detail editing/playback |
 | Backup/restore | Pass | SQLite online snapshot, manifest, backup audit, staging restore, diagnostic bundle without private contents |
 | Packaging | Pass | Fresh portable ZIP and installer, exact SHA-256 manifest, Python-free smoke tests, reinstall/data-preservation/uninstall test |
 | Repository privacy | Pass | Source and release scanners passed; model/audio/database/backup files ignored |
@@ -41,13 +41,12 @@ installer smoke test passed (install + UI self-test + uninstall/data preservatio
 
 ## Deliberate boundaries and follow-up actions
 
-1. **No release asset has been published by this audit.** GitHub Actions quality-gate and Windows build-smoke passed for the UI refresh at commit `44bd0f9` (run `29497575364`). Publish/tag only when the team chooses to release the assets.
-2. **Offline model packs are not bundled into the normal installer.** This is intentional. Generate them explicitly from local verified model folders and attach them as separate release assets when needed.
-3. **The installer is unsigned.** SmartScreen may warn. A code-signing certificate is a distribution enhancement, not a code defect.
-4. **The 13,000-file production run was not started.** This is a mandatory safety boundary, not an unfinished test. The application is designed for the user to run locally after reviewing the 20-file result.
+1. **Offline model packs are not bundled into the normal installer.** This is intentional. Generate them explicitly from local verified model folders and attach them as separate release assets when needed.
+2. **The installer is unsigned.** SmartScreen may warn. A code-signing certificate is a distribution enhancement, not a code defect.
+3. **The 13,000-file production run was not started.** This is a mandatory safety boundary, not an unfinished test. The application is designed for the user to run locally after reviewing the 20-file result.
 
 ## Release decision
 
 **Local build gate: PASS.**
-**Remote CI gate: PASS.**
-**Release-asset publication: next step is tag `v0.2.0`.**
+**Remote CI gate: PASS (the release-workflow fallback is committed for future tags).**
+**Release-asset publication: PASS — [v0.2.0](https://github.com/steffenkwik/different-network-transcribe/releases/tag/v0.2.0).**
