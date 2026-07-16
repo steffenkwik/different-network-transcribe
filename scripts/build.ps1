@@ -6,7 +6,11 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
-$python = Join-Path $repo ".venv\Scripts\python.exe"
+# Developers build from the pinned local virtual environment.  GitHub Actions
+# supplies Python through actions/setup-python instead, so do not require a
+# .venv there.
+$venvPython = Join-Path $repo ".venv\Scripts\python.exe"
+$python = if (Test-Path $venvPython) { $venvPython } else { "python" }
 
 $migrationFiles = Get-ChildItem "$repo\migrations" -Filter "*.sql" -File
 if ($migrationFiles.Count -eq 0) { throw "Tidak ada berkas migrasi SQL untuk dibundel." }
@@ -29,8 +33,13 @@ $pyInstallerArgs += "app\main.py"
 & $python -m PyInstaller @pyInstallerArgs
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller gagal" }
 
-$iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
-if (-not (Test-Path $iscc)) { throw "Inno Setup tidak ditemukan" }
+$isccCandidates = @(
+    (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
+    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+) | Where-Object { $_ -and (Test-Path $_) }
+$iscc = $isccCandidates | Select-Object -First 1
+if ($null -eq $iscc) { throw "Inno Setup tidak ditemukan" }
 & $iscc installer\different-network-transcribe.iss
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup gagal" }
 

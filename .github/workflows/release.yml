@@ -26,6 +26,8 @@ jobs:
       - name: Verify repository privacy
         run: python scripts/scan_private_data.py
       - name: Build and smoke test
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1
       - name: Verify release assets
         run: |
