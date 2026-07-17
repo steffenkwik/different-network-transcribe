@@ -284,6 +284,10 @@ class TranscriptionSetupDialog(QDialog):
     SCOPE_SELECTED = "selected"
     SCOPE_ALL = "all"
 
+    MODEL_NOT_INSTALLED_HINT = (
+        "Model belum terpasang. Klik Unduh di bawah, atau impor dari Pengaturan & Data."
+    )
+
     def __init__(self, service: ApplicationService, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.service = service
@@ -291,6 +295,7 @@ class TranscriptionSetupDialog(QDialog):
         self._candidate_total = 0
         self._checked: set[int] = set()
         self._updating = False
+        self._download_jobs: set[ServiceJob] = set()
         self.setWindowTitle("Siapkan Transkripsi")
         self.resize(960, 720)
         self.setModal(True)
@@ -346,29 +351,35 @@ class TranscriptionSetupDialog(QDialog):
 
     def _model_section(self) -> QFrame:
         self.model_status = self.service.model_status()
+        self.model_meta: dict[str, tuple[str, str]] = {}
+        self.model_buttons: dict[str, QRadioButton] = {}
+        self.model_download_buttons: dict[str, QPushButton] = {}
+        self.model_group = QButtonGroup(self)
+
         section = QFrame()
         section.setObjectName("workflowCard")
-        model_layout = QHBoxLayout(section)
-        model_layout.setContentsMargins(16, 14, 16, 14)
-        copy = QVBoxLayout()
+        outer = QVBoxLayout(section)
+        outer.setContentsMargins(16, 14, 16, 14)
         title = QLabel("1. Model lokal")
         title.setObjectName("sectionTitle")
-        copy.addWidget(title)
-        copy.addWidget(QLabel("Model dimuat sekali oleh worker dan tetap berada di komputer ini."))
-        model_layout.addLayout(copy, 1)
-        self.model_buttons = {
-            key: self._model_radio(key, title, description)
-            for key, title, description in (
-                ("small", S.MODEL_SMALL_TITLE, "Cepat; direkomendasikan untuk mulai."),
-                ("medium", S.MODEL_MEDIUM_TITLE, "Lebih akurat; membutuhkan waktu lebih lama."),
-                ("turbo", S.MODEL_TURBO_TITLE, "Akurasi tinggi dengan kecepatan mendekati Small."),
-                ("high", S.MODEL_HIGH_TITLE, "Paling akurat; paling lambat dan butuh RAM/disk lebih besar."),
-            )
-        }
-        self.model_group = QButtonGroup(self)
-        for button in self.model_buttons.values():
-            self.model_group.addButton(button)
-            model_layout.addWidget(button)
+        outer.addWidget(title)
+        outer.addWidget(
+            QLabel("Model dimuat sekali oleh worker dan tetap berada di komputer ini.")
+        )
+        row = QHBoxLayout()
+        for key, model_title, description in (
+            ("small", S.MODEL_SMALL_TITLE, "Cepat; direkomendasikan untuk mulai."),
+            ("medium", S.MODEL_MEDIUM_TITLE, "Lebih akurat; membutuhkan waktu lebih lama."),
+            ("turbo", S.MODEL_TURBO_TITLE, "Akurasi tinggi dengan kecepatan mendekati Small."),
+            ("high", S.MODEL_HIGH_TITLE, "Paling akurat; paling lambat dan butuh RAM/disk lebih besar."),
+        ):
+            row.addWidget(self._model_cell(key, model_title, description))
+        outer.addLayout(row)
+
+        self.model_hint = QLabel()
+        self.model_hint.setObjectName("subtle")
+        self.model_hint.setWordWrap(True)
+        outer.addWidget(self.model_hint)
         return section
 
     def _scope_section(self) -> QFrame:
@@ -441,20 +452,98 @@ class TranscriptionSetupDialog(QDialog):
 
     # ----------------------------------------------------------------- data
 
-    def _model_radio(self, key: str, title: str, description: str) -> QRadioButton:
+    @staticmethod
+    def _model_label(title: str, description: str, installed: bool) -> str:
+        return f"{title}\n{description}\n{'Terpasang' if installed else 'Belum terpasang'}"
+
+    def _model_cell(self, key: str, title: str, description: str) -> QWidget:
         models = self.model_status.get("models", {})
         entry = models.get(key, {}) if isinstance(models, dict) else {}
         installed = bool(entry.get("installed")) if isinstance(entry, dict) else False
-        label = f"{title}\n{description}\n{'Terpasang' if installed else 'Belum terpasang'}"
-        radio = QRadioButton(label)
+        self.model_meta[key] = (title, description)
+
+        cell = QWidget()
+        box = QVBoxLayout(cell)
+        box.setContentsMargins(0, 0, 0, 0)
+        radio = QRadioButton(self._model_label(title, description, installed))
         radio.setProperty("modelKey", key)
         radio.setEnabled(installed)
-        radio.setToolTip(
-            "Model belum terpasang. Buka Pengaturan & Data untuk unduh atau impor."
-            if not installed
-            else title
+        radio.setToolTip(title if installed else self.MODEL_NOT_INSTALLED_HINT)
+        self.model_buttons[key] = radio
+        self.model_group.addButton(radio)
+        box.addWidget(radio)
+
+        download = QPushButton("Unduh")
+        download.setToolTip(
+            f"Unduh bobot model {key} dari Hugging Face. Audio dan transkrip tidak dikirim."
         )
-        return radio
+        download.clicked.connect(lambda _checked=False, k=key: self._download_model_inline(k))
+        download.setVisible(not installed)
+        self.model_download_buttons[key] = download
+        box.addWidget(download)
+        box.addStretch(1)
+        return cell
+
+    def _download_model_inline(self, key: str) -> None:
+        """Download a model from the preflight so Turbo/High are reachable here.
+
+        The old dialog only disabled the radio for a missing model and pointed at
+        Settings, which left Turbo and High effectively unusable from the one
+        place a run is actually started. Blueprint §5.1 asks for an inline
+        download; this runs it off the UI thread and re-enables the model in place.
+        """
+        if self.service is None:
+            return
+        confirmed = QMessageBox.question(
+            self,
+            APP_NAME,
+            f"Unduh model {key} sebagai bobot lokal? Unduhan cukup besar dan bisa memakan "
+            "beberapa menit. Audio dan transkrip tidak pernah dikirim.",
+        )  # type: ignore[call-arg]
+        if confirmed != QMessageBox.StandardButton.Yes:
+            return
+        for button in self.model_download_buttons.values():
+            button.setEnabled(False)
+        self.model_hint.setText(
+            f"Mengunduh model {key}… biarkan jendela ini terbuka; proses bisa beberapa menit."
+        )
+        job = ServiceJob(lambda _job: self.service.download_model(key), self)
+        self._download_jobs.add(job)
+
+        def on_success(_result: object) -> None:
+            self.model_hint.setText(f"Model {key} siap digunakan.")
+            self._reload_model_status_and_refresh(select=key)
+
+        def on_failure(message: str) -> None:
+            self.model_hint.setText("")
+            for button in self.model_download_buttons.values():
+                button.setEnabled(True)
+            QMessageBox.warning(self, APP_NAME, message)  # type: ignore[call-arg]
+
+        job.succeeded.connect(on_success)
+        job.failed.connect(on_failure)
+        job.finished.connect(lambda: self._download_jobs.discard(job))
+        job.start()
+
+    def _reload_model_status_and_refresh(self, select: str | None = None) -> None:
+        self.model_status = self.service.model_status()
+        raw = self.model_status.get("models", {})
+        models = raw if isinstance(raw, dict) else {}
+        for key, radio in self.model_buttons.items():
+            entry = models.get(key, {})
+            installed = bool(entry.get("installed")) if isinstance(entry, dict) else False
+            title, description = self.model_meta[key]
+            radio.setText(self._model_label(title, description, installed))
+            radio.setEnabled(installed)
+            radio.setToolTip(title if installed else self.MODEL_NOT_INSTALLED_HINT)
+            download = self.model_download_buttons.get(key)
+            if download is not None:
+                download.setVisible(not installed)
+                download.setEnabled(not installed)
+        chosen = self.model_buttons.get(select) if select else None
+        if chosen is not None and chosen.isEnabled():
+            chosen.setChecked(True)
+        self._update_start_state()
 
     def _load_models(self) -> None:
         default = str(self.model_status.get("default_model", "small"))

@@ -438,6 +438,55 @@ def test_preflight_can_select_thousands_without_a_twenty_file_cap(qtbot, tmp_pat
     assert dialog.start_button.isEnabled() is True
 
 
+def test_preflight_offers_inline_download_for_uninstalled_models(qtbot, tmp_path: Path) -> None:
+    """Turbo/High must be reachable from the preflight, not a dead greyed-out row.
+
+    Regression: the dialog only disabled the radio for a missing model, leaving
+    Turbo and High unusable from the one screen that starts a run.
+    """
+    from app.ui.launch import TranscriptionSetupDialog
+
+    _, service = _preflight_with_candidates(tmp_path, 3)  # only 'small' is installed
+    dialog = TranscriptionSetupDialog(service)
+    qtbot.addWidget(dialog)
+
+    assert dialog.model_buttons["small"].isEnabled() is True
+    assert dialog.model_download_buttons["small"].isHidden() is True
+    for key in ("turbo", "high"):
+        assert dialog.model_buttons[key].isEnabled() is False
+        # The download affordance is present (isHidden reflects the explicit flag
+        # regardless of whether the dialog has been shown).
+        assert dialog.model_download_buttons[key].isHidden() is False
+
+
+def test_preflight_enables_model_after_inline_install(qtbot, tmp_path: Path) -> None:
+    """Once weights land, the model becomes selectable without reopening the dialog."""
+    from app.transcription.model_registry import MODELS, ModelRegistry
+    from app.ui.launch import TranscriptionSetupDialog
+
+    paths, service = _preflight_with_candidates(tmp_path, 3)
+    dialog = TranscriptionSetupDialog(service)
+    qtbot.addWidget(dialog)
+    assert dialog.model_buttons["turbo"].isEnabled() is False
+
+    # Simulate a completed download by registering verified Turbo weights, then
+    # run the same refresh the download's success handler calls.
+    model_dir = paths.models_dir / "turbo"
+    model_dir.mkdir(parents=True)
+    for name in ("config.json", "model.bin", "tokenizer.json", "vocabulary.json"):
+        (model_dir / name).write_bytes(b"fake-but-present")
+    ModelRegistry(paths.models_dir)._write_registry(
+        MODELS["turbo"], {"model.bin": {"size": 16, "sha256": "abc"}}, "download"
+    )
+
+    dialog._reload_model_status_and_refresh(select="turbo")
+
+    assert dialog.model_buttons["turbo"].isEnabled() is True
+    assert dialog.model_buttons["turbo"].isChecked() is True
+    assert dialog.model_download_buttons["turbo"].isHidden() is True
+    assert dialog.selected_model() == "turbo"
+
+
 def test_preflight_only_pages_the_table_not_the_whole_archive(qtbot, tmp_path: Path) -> None:
     from app.ui.launch import TranscriptionSetupDialog
 
