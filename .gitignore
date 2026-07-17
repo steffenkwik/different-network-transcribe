@@ -79,3 +79,16 @@ packaging/pyinstaller/dist/
 .idea/
 Thumbs.db
 desktop.ini
+
+# ---------------------------------------------------------------------------
+# Internal planning and development materials stay on the maintainer's local
+# computer / private storage. Public GitHub contains the app and user guides.
+# ---------------------------------------------------------------------------
+BLUEPRINT_AUDIT_FIX_V2.md
+PROJECT_BLUEPRINT.md
+TECHNICAL_ADDENDUM.md
+docs/
+tests/
+scripts/
+.github/
+DifferentNetworkTranscribe.spec
