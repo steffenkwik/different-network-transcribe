@@ -3,6 +3,9 @@
 Aplikasi desktop Windows untuk mentranskripsikan voice note WhatsApp secara
 lokal. Audio, ekspor chat, dan teks transkrip tetap berada di komputer Anda.
 
+> **[Unduh aplikasi Windows](DOWNLOAD.md)** — installer EXE, versi portable,
+> dan pemeriksaan SHA-256 tersedia pada satu halaman.
+
 ## Unduh dan instal
 
 1. Buka halaman [GitHub Releases](https://github.com/steffenkwik/different-network-transcribe/releases/latest).
@@ -14,8 +17,8 @@ lokal. Audio, ekspor chat, dan teks transkrip tetap berada di komputer Anda.
    model, hasil, log, dan backup tersimpan di folder ini.
 
 Windows dapat menampilkan SmartScreen karena aplikasi belum ditandatangani.
-Sebelum menjalankan berkas, cocokkan SHA-256 dengan `SHA256SUMS.txt` yang ada
-di release yang sama.
+Sebelum menjalankan berkas, ikuti pemeriksaan SHA-256 di halaman
+[Unduh aplikasi Windows](DOWNLOAD.md).
 
 ## Cara pakai singkat
 
