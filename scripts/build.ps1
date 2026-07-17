@@ -42,12 +42,15 @@ $isccCandidates = @(
 ) | Where-Object { $_ -and (Test-Path $_) }
 $iscc = $isccCandidates | Select-Object -First 1
 if ($null -eq $iscc) { throw "Inno Setup tidak ditemukan" }
-& $iscc installer\different-network-transcribe.iss
-if ($LASTEXITCODE -ne 0) { throw "Inno Setup gagal" }
 
 New-Item -ItemType Directory -Force release | Out-Null
 $version = & $python -c "from app.version import APP_VERSION; print(APP_VERSION)"
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) { throw "Versi aplikasi tidak dapat dibaca." }
+
+# app/version.py is the single source of truth: hand the installer the same version
+# so the Setup filename and AppVersion can never drift from the app again.
+& $iscc "/DMyAppVersion=$version" installer\different-network-transcribe.iss
+if ($LASTEXITCODE -ne 0) { throw "Inno Setup gagal" }
 $portableArtifact = "release\DifferentNetworkTranscribe-Portable-x64-v$version.zip"
 Compress-Archive -Path dist\DifferentNetworkTranscribe\* -DestinationPath $portableArtifact -Force
 $hashLines = @(

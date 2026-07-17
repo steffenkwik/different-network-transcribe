@@ -1,5 +1,9 @@
 #define MyAppName "Different Network Transcribe"
-#define MyAppVersion "0.2.1"
+; Version is the single source of truth in app/version.py. build.ps1 passes it in
+; with /DMyAppVersion=<version>; this literal is only a fallback for direct ISCC runs.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.3.0"
+#endif
 #define MyAppExeName "DifferentNetworkTranscribe.exe"
 
 [Setup]

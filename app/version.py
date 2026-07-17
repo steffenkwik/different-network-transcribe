@@ -5,11 +5,11 @@ from __future__ import annotations
 
 APP_NAME = "Different Network Transcribe"
 APP_SLUG = "DifferentNetworkTranscribe"
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.3.0"
 
 # Bumped only when the on-disk schema changes. The migration runner is the
 # authority; this constant is what backups and diagnostics report.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Written into export front matter and the .dntbackup manifest.
 CONFIG_SCHEMA_VERSION = 1
