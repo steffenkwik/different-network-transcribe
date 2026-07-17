@@ -23,6 +23,7 @@ class Migration:
     name: str
     path: Path
     checksum: str
+    accepted_checksums: frozenset[str]
 
 
 def utc_now() -> str:
@@ -39,17 +40,33 @@ def migration_catalog(migrations_dir: Path) -> list[Migration]:
         if version in seen_versions:
             raise MigrationError(f"Versi migrasi ganda: {version}")
         seen_versions.add(version)
+        contents = path.read_bytes()
         migrations.append(
             Migration(
                 version=version,
                 name=description,
                 path=path,
-                checksum=hashlib.sha256(path.read_bytes()).hexdigest(),
+                checksum=hashlib.sha256(contents).hexdigest(),
+                accepted_checksums=_checksum_variants(contents),
             )
         )
     if not migrations:
         raise MigrationError("Tidak ada berkas migrasi SQL.")
     return migrations
+
+
+def _checksum_variants(contents: bytes) -> frozenset[str]:
+    """Accept only byte-equivalent SQL with alternate Windows line endings.
+
+    A few released Windows packages copied ``.sql`` resources with CRLF while
+    the source/package used LF. SQLite executes both identically, but the
+    previous raw-byte checksum gate treated an existing, official database as
+    tampered. The variants below preserve the security boundary: any SQL token,
+    comment, or whitespace change other than LF/CRLF still fails validation.
+    """
+    lf = contents.replace(b"\r\n", b"\n")
+    variants = (contents, lf, lf.replace(b"\n", b"\r\n"))
+    return frozenset(hashlib.sha256(item).hexdigest() for item in variants)
 
 
 def backup_database(source: Path, backups_dir: Path, *, label: str = "pre-migration") -> Path:
@@ -100,7 +117,10 @@ class MigrationRunner:
         try:
             applied = self._applied(connection)
             for migration in catalog:
-                if migration.version in applied and applied[migration.version] != migration.checksum:
+                if (
+                    migration.version in applied
+                    and applied[migration.version] not in migration.accepted_checksums
+                ):
                     raise MigrationError(
                         f"Checksum migrasi {migration.version:04d} tidak cocok; berkas pernah diubah."
                     )
