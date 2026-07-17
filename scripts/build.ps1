@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [switch]$SkipSmokeTest
+    [switch]$SkipSmokeTest,
+    [switch]$Console
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,8 +15,9 @@ $python = if (Test-Path $venvPython) { $venvPython } else { "python" }
 
 $migrationFiles = Get-ChildItem "$repo\migrations" -Filter "*.sql" -File
 if ($migrationFiles.Count -eq 0) { throw "Tidak ada berkas migrasi SQL untuk dibundel." }
+$uiMode = if ($Console) { "--console" } else { "--windowed" }
 $pyInstallerArgs = @(
-    "--noconfirm", "--clean", "--windowed", "--onedir", "--name", "DifferentNetworkTranscribe",
+    "--noconfirm", "--clean", $uiMode, "--onedir", "--name", "DifferentNetworkTranscribe",
     "--icon", "$repo\assets\brand\dn-favicon.ico",
     "--specpath", "$repo\build\spec",
     "--collect-all", "numpy", "--collect-all", "faster_whisper", "--collect-all", "ctranslate2",

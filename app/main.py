@@ -63,7 +63,15 @@ def main(argv: list[str] | None = None) -> int:
         import faster_whisper
         import numpy
 
-        print(f"ENGINE_IMPORT_SELF_TEST PASS numpy={numpy.__version__} faster_whisper={faster_whisper.__version__}")
+        # A Windows PyInstaller ``--windowed`` executable has no reliable stdout
+        # handle. Writing a diagnostic line there can keep the subprocess alive,
+        # even though the imports succeeded. The packaged smoke test uses the
+        # exit code; retain the useful line for normal development execution.
+        if not getattr(sys, "frozen", False):
+            print(
+                "ENGINE_IMPORT_SELF_TEST PASS "
+                f"numpy={numpy.__version__} faster_whisper={faster_whisper.__version__}"
+            )
         return 0
 
     if args.worker:
