@@ -1,5 +1,18 @@
 # Panduan Pengguna
 
+## Tambah audio tanpa menyiapkan folder
+
+Untuk pekerjaan cepat, buka **Beranda** lalu gunakan salah satu cara berikut:
+
+1. Klik **Pilih File Audio** dan pilih satu sampai 20 file; atau
+2. Tarik file audio dari Windows Explorer ke area **Tarik file audio ke sini**.
+
+File tidak perlu dipindahkan ke folder baru. Aplikasi hanya membaca file dari lokasi
+asal dan tidak menyalin, mengubah, atau menghapusnya. Setelah ditambahkan, klik
+**Siapkan & Mulai Transkripsi**. Semua file batch ditampilkan di dialog persiapan;
+pilih model lalu centang hanya file yang memang ingin diproses. Batas 20 file membuat
+pengujian dan pekerjaan kecil tetap aman dari transkripsi massal yang tidak sengaja.
+
 ## Folder sumber
 
 Pilih folder audio dan folder export chat dari **Pengaturan & Data**. Keduanya diperlakukan sebagai sumber **read-only**.
@@ -26,7 +39,10 @@ dihapus tidak masuk antrean lagi sampai Anda memilihnya sendiri pada dialog pers
 Gunakan **Scan File Baru**, lalu **Mulai / Lanjutkan**. Jeda dan Berhenti Aman menyelesaikan atau melepas file
 saat ini tanpa menghapus riwayat. Daftar **Semua Transkrip** memakai pencarian nama file, filter status, dan
 pagination; teks transkrip baru dimuat jika sebuah baris dibuka. Hasil Markdown, TXT, CSV, dan JSONL dapat dibuat
-ulang dari SQLite tanpa transkripsi ulang.
+ulang dari SQLite tanpa transkripsi ulang. Setelah tombol **Buat Hasil** selesai,
+Windows Explorer akan mencoba membuka folder hasil secara otomatis dan aplikasi
+menampilkan path lengkapnya. Gunakan **Buka Folder Hasil** untuk membuka lokasi yang
+sama kapan pun.
 
 ## Review dan pemulihan
 

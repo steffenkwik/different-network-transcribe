@@ -1,5 +1,11 @@
 # Final Audit — v0.2.0 Release
 
+> **v0.2.1 follow-up:** The audit remains valid for the prior release. The new
+> version adds a bounded direct-file picker/drop workflow, multi-root worker
+> filtering, High-model `vocabulary.json` compatibility, and automatic Output-folder
+> opening. It is subject to a fresh lint, type, automated-test, installer, portable,
+> and smoke-test gate before publication.
+
 **Audited:** 2026-07-16 (local gate + remote CI verified)
 **Scope:** all implemented phases, post-audit Different Network UI/UX refresh, final source quality gate, fresh Windows packaging, smoke test, and recorded limited real-data test.
 **Safety boundary:** no new real audio/chat file was opened or transcribed for this audit.

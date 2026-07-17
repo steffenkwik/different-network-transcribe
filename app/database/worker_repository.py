@@ -124,15 +124,18 @@ class WorkerRepository:
                 )
         return len(rows)
 
-    def requeue_failed(self, active_root: str | None = None) -> int:
+    def requeue_failed(
+        self, active_root: str | None = None, *, active_roots: list[str] | None = None
+    ) -> int:
         """Retry only explicitly failed rows; completed rows are never touched."""
+        root_where, root_parameters = _root_filter(active_root, active_roots, "s.original_path")
         with transaction(self.connection, immediate=True):
             rows = self.connection.execute(
                 """SELECT a.id FROM audio_files AS a
                    JOIN source_roots AS s ON s.id = a.source_root_id
                    WHERE a.current_state = 'failed' AND a.transcription_enabled = 1 AND a.readable = 1 AND a.zero_byte = 0
-                     AND (? IS NULL OR s.original_path = ?)""",
-                (active_root, active_root),
+                     AND """ + root_where,
+                root_parameters,
             ).fetchall()
             for row in rows:
                 audio_file_id = int(row["id"])
@@ -152,12 +155,14 @@ class WorkerRepository:
         session_id: int,
         active_root: str | None = None,
         *,
+        active_roots: list[str] | None = None,
         model_name: str = "small",
         model_hash: str | None = None,
         language: str = "id",
         settings: dict[str, object] | None = None,
         engine_version: str = "1.1.1",
     ) -> sqlite3.Row | None:
+        root_where, root_parameters = _root_filter(active_root, active_roots, "s.original_path")
         with transaction(self.connection, immediate=True):
             audio = self.connection.execute(
                 """SELECT a.*, v.id AS source_version_id, v.sha256 AS source_sha256,
@@ -165,9 +170,8 @@ class WorkerRepository:
                    JOIN audio_source_versions v ON v.id = a.current_source_version_id
                    JOIN source_roots s ON s.id = a.source_root_id
                    WHERE a.current_state = 'queued' AND a.transcription_enabled = 1 AND a.readable = 1 AND a.zero_byte = 0
-                     AND (? IS NULL OR s.original_path = ?)
-                   ORDER BY a.id LIMIT 1""",
-                (active_root, active_root),
+                     AND """ + root_where + " ORDER BY a.id LIMIT 1",
+                root_parameters,
             ).fetchone()
             if audio is None:
                 return None
@@ -317,3 +321,13 @@ class WorkerRepository:
                     )
                     recovered += 1
         return recovered
+
+
+def _root_filter(
+    active_root: str | None, active_roots: list[str] | None, column: str
+) -> tuple[str, list[str]]:
+    roots = active_roots if active_roots is not None else ([] if active_root is None else [active_root])
+    unique = sorted(set(roots))
+    if not unique:
+        return "1 = 1", []
+    return f"{column} IN ({','.join('?' for _ in unique)})", unique

@@ -17,7 +17,7 @@ Three locally-run models are exposed to the user. All are CTranslate2 conversion
 Default: `small`. Medium and High are **never downloaded silently** (addendum §6.1).
 
 The catalog also carries the required artifact file list per model:
-`config.json`, `model.bin`, `tokenizer.json`, `vocabulary.txt` (plus `preprocessor_config.json` when present).
+`config.json`, `model.bin`, `tokenizer.json`, and one vocabulary file: `vocabulary.json` (the current Large-v3 layout) or `vocabulary.txt` (older compatible layouts). `preprocessor_config.json` is preserved when present.
 
 ## 2. On-disk layout
 
@@ -25,7 +25,7 @@ The catalog also carries the required artifact file list per model:
 <data>/Models/
   registry.json                      ← the registry (below)
   small/
-    config.json  model.bin  tokenizer.json  vocabulary.txt
+    config.json  model.bin  tokenizer.json  vocabulary.json|vocabulary.txt
     .dnt-manifest.json               ← per-file sha256 + sizes, written at install
   medium/
     ...
@@ -56,7 +56,7 @@ The catalog also carries the required artifact file list per model:
         "config.json":    {"size": 2263,      "sha256": "4f1c...9a02"},
         "model.bin":      {"size": 483546112, "sha256": "9c0a...e31f"},
         "tokenizer.json": {"size": 2202019,   "sha256": "b71d...44c8"},
-        "vocabulary.txt": {"size": 460166,    "sha256": "0e5a...7712"}
+        "vocabulary.json": {"size": 460166,    "sha256": "0e5a...7712"}
       }
     },
     "medium": {

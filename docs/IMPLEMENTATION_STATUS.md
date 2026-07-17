@@ -1,6 +1,6 @@
 # Implementation Status
 
-**App version:** 0.2.0
+**App version:** 0.2.1
 **Updated:** 2026-07-16 — v0.2.0 public release published
 **Evidence convention:** `Tested` means an automated gate or explicitly recorded limited local test has passed. `Implemented` means the code/workflow exists but needs an external publication or CI action.
 
@@ -88,3 +88,11 @@ derived formats                Markdown, TXT, CSV, JSONL present
 - **Hapus Riwayat Terpilih** requires Ctrl/Shift row selection and confirmation. It preserves audio, paths, source fingerprints, and chat metadata, and leaves cleared files disabled until selected again.
 - The test runner now uses a fresh user-temp directory per run, avoiding stale Windows file locks.
 - v0.2.0 portable/installer package smoke test passed with Python absent from `PATH`; both build assets contain the DN logo and bundled Academy fonts.
+
+## v0.2.1 direct-file and High-model update
+
+- Beranda accepts an explicit local batch through **Pilih File Audio** or accessible drag-and-drop. The selected sources are never copied, moved, or edited; their parent folders are stored only as read-only locations.
+- The direct workflow caps a batch at 20 audio files and opens the model-and-checkbox preflight, where every candidate remains visible before the worker starts.
+- Multi-location direct batches flow through discovery, selection, queue preparation, and worker claiming without falling back to a single-root assumption.
+- High verification accepts the official Large-v3 `vocabulary.json` layout as well as older `vocabulary.txt`, fixing the false `Model tidak ditemukan atau rusak` result after a correct High download/import.
+- Export completion attempts to open the owned Output folder immediately and always reports its full path in the confirmation dialog and Beranda.

@@ -7,7 +7,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from app.transcription.model_registry import MODELS, REQUIRED_FILES, ModelError
+from app.transcription.model_registry import MODELS, ModelError, missing_model_files
 
 
 def build_model_pack(models_dir: Path, key: str, output_dir: Path) -> Path:
@@ -19,7 +19,7 @@ def build_model_pack(models_dir: Path, key: str, output_dir: Path) -> Path:
     if key not in MODELS:
         raise ModelError("Model tidak dikenal.")
     source = models_dir / key
-    missing = sorted(name for name in REQUIRED_FILES if not (source / name).is_file())
+    missing = missing_model_files(source)
     if missing:
         raise ModelError("Model tidak ditemukan atau rusak.")
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from app.database.connection import transaction
 from app.database.repositories import now
+from app.version import APP_VERSION
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,7 @@ def atomic_write(path: Path, content: bytes) -> str:
 
 class ExportService:
     def __init__(
-        self, connection: sqlite3.Connection, output_dir: Path, *, app_version: str = "0.2.0"
+        self, connection: sqlite3.Connection, output_dir: Path, *, app_version: str = APP_VERSION
     ) -> None:
         self.connection = connection
         self.output_dir = output_dir

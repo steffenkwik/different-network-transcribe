@@ -28,11 +28,18 @@ class QueueService:
     explicit request. Model, engine, export, or UI configuration are absent here.
     """
 
-    def __init__(self, connection: sqlite3.Connection, active_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        active_root: Path | None = None,
+        active_roots: list[Path] | None = None,
+    ) -> None:
         self.connection = connection
-        self.active_root = None if active_root is None else str(active_root.resolve())
+        roots = active_roots if active_roots is not None else ([] if active_root is None else [active_root])
+        self.active_roots = sorted({str(root.resolve()) for root in roots}) or None
 
     def prepare(self) -> QueuePreparation:
+        root_where, root_parameters = self._root_filter("s.original_path")
         rows = self.connection.execute(
             """
             SELECT a.id, a.current_state, a.transcription_enabled, a.current_relative_path, a.current_source_version_id, s.original_path,
@@ -45,10 +52,8 @@ class QueueService:
             LEFT JOIN audio_source_versions v ON v.id = a.current_source_version_id
             LEFT JOIN transcription_attempts t ON t.id = a.preferred_transcript_id
             WHERE a.readable = 1 AND a.zero_byte = 0
-              AND (? IS NULL OR s.original_path = ?)
-            ORDER BY a.id
-            """,
-            (self.active_root, self.active_root),
+              AND """ + root_where + " ORDER BY a.id",
+            root_parameters,
         ).fetchall()
         summary = QueuePreparation()
         for row in rows:
@@ -128,5 +133,10 @@ class QueueService:
         self.connection.execute(
             """INSERT INTO processing_events(audio_file_id, event_type, event_at, details_json)
                VALUES (?, ?, ?, ?)""",
-            (audio_file_id, event_type, now(), json.dumps({"source": "queue_prepare"})),
-        )
+                (audio_file_id, event_type, now(), json.dumps({"source": "queue_prepare"})),
+            )
+
+    def _root_filter(self, column: str) -> tuple[str, list[str]]:
+        if self.active_roots is None:
+            return "1 = 1", []
+        return f"{column} IN ({','.join('?' for _ in self.active_roots)})", self.active_roots

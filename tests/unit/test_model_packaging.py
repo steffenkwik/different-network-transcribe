@@ -18,11 +18,13 @@ def test_model_pack_contains_required_artifacts(tmp_path: Path) -> None:
     source.mkdir(parents=True)
     for name in REQUIRED_FILES:
         (source / name).write_text(name, encoding="utf-8")
+    (source / "vocabulary.json").write_text("vocabulary", encoding="utf-8")
 
     package = build_model_pack(tmp_path / "Models", "small", tmp_path / "release")
 
     with zipfile.ZipFile(package) as archive:
         assert set(archive.namelist()) >= REQUIRED_FILES
+        assert "vocabulary.json" in archive.namelist()
 
 
 def test_model_pack_requires_complete_local_model(tmp_path: Path) -> None:

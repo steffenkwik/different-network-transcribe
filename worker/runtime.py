@@ -23,6 +23,7 @@ class WorkerLoop:
         engine: TranscriptionEngine,
         status_file: Path | None = None,
         active_root: Path | None = None,
+        active_roots: list[Path] | None = None,
         heartbeat_interval_seconds: float = 2.0,
         model_name: str = "small",
         model_hash: str | None = None,
@@ -32,7 +33,9 @@ class WorkerLoop:
         self.database_file = database_file
         self.connection = open_connection(database_file)
         self.repository = WorkerRepository(self.connection)
-        self.queue_service = QueueService(self.connection, active_root)
+        roots = active_roots if active_roots is not None else ([] if active_root is None else [active_root])
+        self.active_roots = sorted({str(root.resolve()) for root in roots}) or None
+        self.queue_service = QueueService(self.connection, active_roots=roots)
         self.instance_token = instance_token
         self.engine = engine
         self.status_file = status_file
@@ -98,7 +101,7 @@ class WorkerLoop:
             requeued = self.repository.requeue_selected(ids)
             self.repository.complete_command(int(command["id"]), f"requeued:{requeued}")
         if command is not None and command["command"] == "retry_failed":
-            requeued = self.repository.requeue_failed(self.active_root)
+            requeued = self.repository.requeue_failed(self.active_root, active_roots=self.active_roots)
             self.repository.complete_command(int(command["id"]), f"requeued_failed:{requeued}")
         if self.paused:
             self.repository.heartbeat(self.session_id, "paused")
@@ -106,6 +109,7 @@ class WorkerLoop:
         record = self.repository.claim_next(
             self.session_id,
             self.active_root,
+            active_roots=self.active_roots,
             model_name=self.model_name,
             model_hash=self.model_hash,
             language=self.language,
@@ -157,13 +161,13 @@ class WorkerLoop:
     def _write_status(self, state: str) -> None:
         if self.status_file is None:
             return
+        root_where, root_parameters = _root_filter(self.active_roots, "s.original_path")
         rows = self.connection.execute(
             """SELECT a.current_state, COUNT(*) AS total
                FROM audio_files a
                JOIN source_roots s ON s.id = a.source_root_id
-               WHERE (? IS NULL OR s.original_path = ?)
-               GROUP BY a.current_state""",
-            (self.active_root, self.active_root),
+               WHERE """ + root_where + " GROUP BY a.current_state",
+            root_parameters,
         ).fetchall()
         counts = {str(row["current_state"]): int(row["total"]) for row in rows}
         payload = {
@@ -179,3 +183,9 @@ class WorkerLoop:
         temp = self.status_file.with_suffix(".tmp")
         temp.write_text(json.dumps(payload), encoding="utf-8")
         temp.replace(self.status_file)
+
+
+def _root_filter(roots: list[str] | None, column: str) -> tuple[str, list[str]]:
+    if roots is None:
+        return "1 = 1", []
+    return f"{column} IN ({','.join('?' for _ in roots)})", roots

@@ -1,6 +1,6 @@
 [project]
 name = "different-network-transcribe"
-version = "0.2.0"
+version = "0.2.1"
 description = "Transkripsi lokal catatan suara WhatsApp untuk Different Network"
 requires-python = ">=3.12,<3.13"
 license = { text = "MIT" }

@@ -53,6 +53,7 @@ venv/
 .pytest_cache/
 .test-tmp/
 .test-tmp-*/
+.test-temp-*/
 .mypy_cache/
 .ruff_cache/
 .coverage

@@ -110,6 +110,56 @@ class DiscoveryService:
             duplicate_basenames=duplicate_basenames,
         )
 
+    def scan_audio_files(self, files: list[Path]) -> ScanSummary:
+        """Register an explicit file list without recursively scanning its folders.
+
+        This is the safe path behind the desktop file picker and drag-and-drop
+        zone.  Sources are read only and each selected file is rooted at its own
+        parent directory, so users may select files from several locations.
+        Unlike ``scan_audio_root`` this deliberately never marks sibling files
+        missing: the user did not ask us to inspect a whole folder.
+        """
+        selected = sorted({path.resolve() for path in files}, key=normalized_path)
+        if not selected:
+            return ScanSummary()
+
+        roots: dict[Path, int] = {}
+        with transaction(self.connection, immediate=True):
+            for path in selected:
+                if not path.is_file() or path.suffix.casefold() not in SUPPORTED_AUDIO_EXTENSIONS:
+                    raise ValueError(f"File audio tidak didukung: {path.name}")
+                root = path.parent
+                if root not in roots:
+                    roots[root] = self.repository.source_root(
+                        kind="audio", original_path=str(root), normalized_path=normalized_path(root)
+                    )
+
+        summary = ScanSummary()
+        for path in selected:
+            summary = _combine_scan_summaries(
+                summary,
+                self._scan_one(path, roots[path.parent], normalized_relative_path(Path(path.name)), ScanSummary()),
+            )
+
+        with transaction(self.connection, immediate=True):
+            for source_root_id in roots.values():
+                self.repository.finish_root_scan(source_root_id)
+            self.repository.refresh_duplicate_groups()
+            duplicate_basenames = int(
+                self.connection.execute(
+                    "SELECT COUNT(DISTINCT duplicate_group) FROM audio_files WHERE duplicate_group IS NOT NULL"
+                ).fetchone()[0]
+            )
+        return ScanSummary(
+            discovered=summary.discovered,
+            unchanged=summary.unchanged,
+            relinked=summary.relinked,
+            source_changed=summary.source_changed,
+            unreadable=summary.unreadable,
+            zero_byte=summary.zero_byte,
+            duplicate_basenames=duplicate_basenames,
+        )
+
     def _scan_one(
         self, path: Path, source_root_id: int, relative_path: str, summary: ScanSummary
     ) -> ScanSummary:
@@ -209,3 +259,17 @@ class DiscoveryService:
                 unreadable=summary.unreadable + int(not readable),
                 zero_byte=summary.zero_byte + int(zero_byte),
             )
+
+
+def _combine_scan_summaries(first: ScanSummary, second: ScanSummary) -> ScanSummary:
+    """Add per-file scan results without losing the aggregate safety counters."""
+    return ScanSummary(
+        discovered=first.discovered + second.discovered,
+        unchanged=first.unchanged + second.unchanged,
+        relinked=first.relinked + second.relinked,
+        source_changed=first.source_changed + second.source_changed,
+        unreadable=first.unreadable + second.unreadable,
+        zero_byte=first.zero_byte + second.zero_byte,
+        missing=first.missing + second.missing,
+        duplicate_basenames=max(first.duplicate_basenames, second.duplicate_basenames),
+    )

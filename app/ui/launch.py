@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDragLeaveEvent, QDropEvent
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -50,7 +50,11 @@ from app import config as config_mod
 from app.logging_setup import new_session_id, setup_logging
 from app.paths import DataPaths, default_data_root
 from app.resources import strings_id as S
-from app.services.application_service import ApplicationService, TestBatchSummary
+from app.services.application_service import (
+    ApplicationService,
+    DirectFileBatchSummary,
+    TestBatchSummary,
+)
 from app.services.chat_import_service import ChatScanSummary
 from app.services.discovery_service import ScanSummary
 from app.services.metadata_matching_service import MatchingSummary
@@ -76,6 +80,66 @@ class ServiceJob(QThread):
             self.succeeded.emit(self._operation())
         except Exception as exc:  # The UI receives a safe service-level message only.
             self.failed.emit(str(exc) or "Operasi tidak dapat diselesaikan.")
+
+
+class AudioDropZone(QFrame):
+    """Accessible drop target for a deliberate local audio batch.
+
+    Drag-and-drop is only a convenience: the adjacent file-picker button offers
+    the same workflow to keyboard and screen-reader users.  The service owns
+    validation and makes no changes to the source files.
+    """
+
+    files_dropped = Signal(list)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("audioDropZone")
+        self.setAcceptDrops(True)
+        self.setMinimumHeight(104)
+        self.setAccessibleName("Area tarik dan lepas file audio")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 14, 18, 14)
+        title = QLabel("Tarik file audio ke sini")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+        helper = QLabel(
+            "Atau pilih file dengan tombol di bawah. File tetap berada di lokasi asal, "
+            "dan batch langsung ditampilkan sebelum transkripsi. Maksimal 20 file per batch aman."
+        )
+        helper.setObjectName("helperText")
+        helper.setWordWrap(True)
+        layout.addWidget(helper)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls() and any(url.isLocalFile() for url in event.mimeData().urls()):
+            self._set_drag_active(True)
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
+        self._set_drag_active(False)
+        event.accept()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        self._set_drag_active(False)
+        files = [
+            Path(url.toLocalFile())
+            for url in event.mimeData().urls()
+            if url.isLocalFile() and Path(url.toLocalFile()).is_file()
+        ]
+        if files:
+            self.files_dropped.emit(files)
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def _set_drag_active(self, active: bool) -> None:
+        self.setProperty("dragActive", active)
+        style = self.style()
+        style.unpolish(self)
+        style.polish(self)
 
 
 class FirstRunWizard(QWizard):
@@ -350,7 +414,10 @@ class TranscriptionSetupDialog(QDialog):
             self.file_table.setItem(index, 4, QTableWidgetItem(str(row["current_relative_path"])))
         self._updating = False
         if page.total == 0:
-            self.file_help.setText("Belum ada file siap diproses. Lakukan Scan File Baru terlebih dahulu.")
+            self.file_help.setText(
+                "Belum ada file siap diproses. Tambahkan file audio dari Beranda, "
+                "tarik dan lepas file, atau lakukan Scan File Baru."
+            )
         elif page.total > self.DISPLAY_LIMIT:
             self.file_help.setText(f"Menampilkan {self.DISPLAY_LIMIT} dari {page.total} file; mode aman hanya memilih maks. 20.")
         else:
@@ -548,6 +615,34 @@ class MainWindow(QMainWindow):
         metrics.addWidget(self.metric_review, 0, 3)
         layout.addLayout(metrics)
 
+        add_files_card = QFrame()
+        add_files_card.setObjectName("workflowCard")
+        add_files_layout = QVBoxLayout(add_files_card)
+        add_files_layout.setContentsMargins(18, 16, 18, 16)
+        add_files_layout.setSpacing(12)
+        add_files_heading = QHBoxLayout()
+        add_files_copy = QVBoxLayout()
+        add_files_title = QLabel("Tambahkan audio langsung")
+        add_files_title.setObjectName("sectionTitle")
+        add_files_copy.addWidget(add_files_title)
+        add_files_info = QLabel(
+            "Tidak perlu menyiapkan folder baru. Pilih beberapa file atau tarik dan lepas ke area ini. "
+            "Audio tidak disalin, dipindahkan, atau diubah."
+        )
+        add_files_info.setObjectName("helperText")
+        add_files_info.setWordWrap(True)
+        add_files_copy.addWidget(add_files_info)
+        add_files_heading.addLayout(add_files_copy, 1)
+        self.add_audio_button = QPushButton("Pilih File Audio")
+        self.add_audio_button.setToolTip("Pilih sampai 20 file audio untuk batch aman.")
+        self.add_audio_button.clicked.connect(self._choose_audio_files)
+        add_files_heading.addWidget(self.add_audio_button)
+        add_files_layout.addLayout(add_files_heading)
+        self.audio_drop_zone = AudioDropZone(add_files_card)
+        self.audio_drop_zone.files_dropped.connect(self._add_audio_files)
+        add_files_layout.addWidget(self.audio_drop_zone)
+        layout.addWidget(add_files_card)
+
         workflow = QFrame()
         workflow.setObjectName("heroCard")
         workflow_layout = QHBoxLayout(workflow)
@@ -620,6 +715,15 @@ class MainWindow(QMainWindow):
         output_info.setObjectName("helperText")
         output_info.setWordWrap(True)
         output_copy.addWidget(output_info)
+        self.output_path_label = QLabel()
+        self.output_path_label.setObjectName("subtle")
+        self.output_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.output_path_label.setWordWrap(True)
+        if self.paths is not None:
+            self.output_path_label.setText(f"Folder hasil: {self.paths.output_dir}")
+        else:
+            self.output_path_label.setText("Folder hasil akan ditampilkan setelah aplikasi siap.")
+        output_copy.addWidget(self.output_path_label)
         output_layout.addLayout(output_copy, 1)
         self.export_button = QPushButton(S.ACTION_EXPORT)
         self.export_button.clicked.connect(self._export)
@@ -1108,6 +1212,39 @@ class MainWindow(QMainWindow):
 
         self._run_background("Memindai folder audio…", service.scan_audio, complete)
 
+    def _choose_audio_files(self) -> None:
+        """Offer the keyboard-equivalent path for the drag-and-drop zone."""
+        selected, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Pilih File Audio (maksimal 20)",
+            "",
+            "Audio yang didukung (*.opus *.ogg *.mp3 *.wav *.m4a *.aac *.flac *.webm *.mp4)",
+        )
+        if selected:
+            self._add_audio_files([Path(path) for path in selected])
+
+    def _add_audio_files(self, files: list[Path]) -> None:
+        """Register an explicit, read-only batch then leave selection visible in preflight."""
+        service = self._require_service()
+        if service is None or not files:
+            return
+
+        def complete(result: object) -> None:
+            if not isinstance(result, DirectFileBatchSummary):
+                return
+            self._show_info(
+                f"{result.selected_count} file ditambahkan dari {result.source_count} pilihan. "
+                f"Scan menemukan {result.scan.discovered} file baru. "
+                "Klik Siapkan & Mulai Transkripsi untuk melihat daftar, memilih model, dan "
+                "mencentang file yang akan diproses."
+            )
+
+        self._run_background(
+            "Menambahkan file audio tanpa memindahkan sumber…",
+            lambda: service.add_audio_files(files),
+            complete,
+        )
+
     def _prepare_test_batch(self) -> None:
         service = self._require_service()
         if service is None:
@@ -1136,21 +1273,34 @@ class MainWindow(QMainWindow):
         service = self._require_service()
         if service is None:
             return
+
+        def complete(result: object) -> None:
+            if not isinstance(result, int):
+                return
+            count = result
+            output_path = str(self.paths.output_dir) if self.paths is not None else "folder hasil aplikasi"
+            self._open_output(show_error=False)
+            self._show_info(
+                f"Hasil dibuat untuk {count} transkrip. Folder hasil dibuka otomatis.\n\n{output_path}"
+            )
+
         self._run_background(
             "Membuat hasil dari database lokal…",
             service.export_all,
-            lambda result: self._show_info(f"Hasil dibuat untuk {result} transkrip."),
+            complete,
         )
 
-    def _open_output(self) -> None:
+    def _open_output(self, *, show_error: bool = True) -> bool:
         """Open only the app-owned derived-output directory in Windows Explorer."""
         if self.paths is None:
-            QMessageBox.warning(self, APP_NAME, "Folder hasil belum tersedia.")  # type: ignore[call-arg]
-            return
+            if show_error:
+                QMessageBox.warning(self, APP_NAME, "Folder hasil belum tersedia.")  # type: ignore[call-arg]
+            return False
         self.paths.output_dir.mkdir(parents=True, exist_ok=True)
         opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.paths.output_dir)))
-        if not opened:
+        if not opened and show_error:
             QMessageBox.warning(self, APP_NAME, "Folder hasil tidak dapat dibuka.")  # type: ignore[call-arg]
+        return opened
 
     def _start(self) -> None:
         service = self._require_service()

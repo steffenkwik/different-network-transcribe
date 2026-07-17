@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import wave
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,15 @@ from app.paths import DataPaths
 from app.services.application_service import ApplicationService
 
 pytestmark = [pytest.mark.unit]
+
+
+def _write_silent_wav(path: Path, *, frames: int = 800) -> None:
+    """Create a tiny valid fixture without using any private audio."""
+    with wave.open(str(path), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(8_000)
+        stream.writeframes(b"\x00\x00" * frames)
 
 
 def test_configured_scan_creates_records_and_exposes_paged_dashboard(tmp_path: Path) -> None:
@@ -40,13 +51,13 @@ def test_export_and_backup_are_available_without_presentation_layer(tmp_path: Pa
     assert service.create_backup().suffix == ".dntbackup"
 
 
-def test_worker_cannot_start_without_an_explicit_audio_test_folder(tmp_path: Path) -> None:
+def test_worker_cannot_start_without_explicit_audio_selection(tmp_path: Path) -> None:
     paths = DataPaths(tmp_path / "data")
     paths.ensure()
     service = ApplicationService(paths)
     service.ensure_database()
 
-    with pytest.raises(ValueError, match="folder audio uji"):
+    with pytest.raises(ValueError, match="Tambahkan file audio"):
         service.start_transcription()
 
 
@@ -82,6 +93,47 @@ def test_prepare_test_batch_rejects_more_than_twenty_sources(tmp_path: Path) -> 
 
     with pytest.raises(ValueError, match="lebih dari 20"):
         service.prepare_test_batch(source)
+
+
+def test_direct_audio_files_use_separate_parents_and_remain_unchanged(tmp_path: Path) -> None:
+    """Picker/drop batches are explicit, bounded, multi-location, and read-only."""
+    paths = DataPaths(tmp_path / "data")
+    paths.ensure()
+    service = ApplicationService(paths)
+    service.ensure_database()
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first = first_dir / "first.wav"
+    second = second_dir / "second.wav"
+    _write_silent_wav(first)
+    _write_silent_wav(second, frames=1_600)
+    before = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in (first, second)}
+
+    summary = service.add_audio_files([first, second])
+
+    assert summary.source_count == 2
+    assert summary.selected_count == 2
+    assert service.dashboard_counts().total == 2
+    assert service.transcription_candidates().total == 2
+    assert service.configured_audio_roots() == [first_dir.resolve(), second_dir.resolve()]
+    assert {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in (first, second)} == before
+
+
+def test_direct_audio_files_reject_more_than_safe_limit(tmp_path: Path) -> None:
+    paths = DataPaths(tmp_path / "data")
+    paths.ensure()
+    service = ApplicationService(paths)
+    service.ensure_database()
+    folder = tmp_path / "source"
+    folder.mkdir()
+    files = [folder / f"{index}.wav" for index in range(21)]
+    for path in files:
+        _write_silent_wav(path)
+
+    with pytest.raises(ValueError, match="maksimal 20"):
+        service.add_audio_files(files)
 
 
 def test_explicit_file_selection_excludes_every_other_incomplete_file(tmp_path: Path) -> None:

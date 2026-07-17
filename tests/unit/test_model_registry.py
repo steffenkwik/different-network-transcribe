@@ -62,3 +62,16 @@ def test_high_model_is_an_explicit_local_accuracy_option() -> None:
     assert high.hf_repo == "Systran/faster-whisper-large-v3"
     assert high.expected_size_bytes > MODELS["medium"].expected_size_bytes
     assert high.minimum_ram_bytes > MODELS["medium"].minimum_ram_bytes
+
+
+def test_high_model_accepts_current_vocabulary_json_layout(tmp_path: Path) -> None:
+    """Large-v3 uses vocabulary.json, not the older vocabulary.txt filename."""
+    registry = ModelRegistry(tmp_path / "Models")
+    model_dir = tmp_path / "Models" / "high"
+    model_dir.mkdir(parents=True)
+    for name in ("config.json", "model.bin", "tokenizer.json", "vocabulary.json"):
+        (model_dir / name).write_text(name, encoding="utf-8")
+
+    manifest = registry.verify("high")
+
+    assert manifest["vocabulary.json"]["size"] > 0

@@ -64,6 +64,8 @@ QFrame#card, QFrame#metricCard, QFrame#heroCard, QFrame#workflowCard {{
 }}
 QFrame#heroCard {{ background: {Colors.SURFACE_RAISED}; border-color: #7A2A0A; }}
 QFrame#workflowCard {{ background: #191919; }}
+QFrame#audioDropZone {{ background: #101010; border: 1px dashed #7A2A0A; border-radius: 11px; }}
+QFrame#audioDropZone[dragActive="true"] {{ background: #2A160C; border: 2px solid {Colors.ORANGE}; }}
 QLabel#metricValue {{ font-size: 26px; font-weight: 700; color: {Colors.TEXT}; }}
 QLabel#metricLabel {{ color: {Colors.TEXT_MUTED}; font-size: 12px; }}
 QLabel#accentMetric {{ color: {Colors.ORANGE}; font-size: 26px; font-weight: 700; }}

@@ -46,7 +46,12 @@ MODELS = {
         5_368_709_120,
     ),
 }
-REQUIRED_FILES = frozenset({"config.json", "model.bin", "tokenizer.json", "vocabulary.txt"})
+# Systran's current Large-v3 release ships ``vocabulary.json``; older
+# faster-whisper model folders used ``vocabulary.txt``.  Both formats are valid
+# CTranslate2 Whisper assets, so requiring only the old filename made High look
+# corrupt even after a correct download.
+REQUIRED_FILES = frozenset({"config.json", "model.bin", "tokenizer.json"})
+VOCABULARY_FILES = frozenset({"vocabulary.json", "vocabulary.txt"})
 Downloader = Callable[[str, Path], None]
 
 
@@ -64,6 +69,14 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def missing_model_files(folder: Path) -> list[str]:
+    """Return human-readable missing requirements for any supported model layout."""
+    missing = [name for name in REQUIRED_FILES if not (folder / name).is_file()]
+    if not any((folder / name).is_file() for name in VOCABULARY_FILES):
+        missing.append("vocabulary.json atau vocabulary.txt")
+    return sorted(missing)
 
 
 class ModelRegistry:
@@ -111,7 +124,7 @@ class ModelRegistry:
         if key not in MODELS:
             raise ModelError("Model tidak dikenal.")
         folder = self.models_dir / key
-        missing = [name for name in REQUIRED_FILES if not (folder / name).is_file()]
+        missing = missing_model_files(folder)
         if missing:
             raise ModelError("Model tidak ditemukan atau rusak.")
         manifest: dict[str, dict[str, Any]] = {}
@@ -121,7 +134,9 @@ class ModelRegistry:
                     "size": path.stat().st_size,
                     "sha256": _sha256(path) if full_hash else "not-checked",
                 }
-        if any(int(manifest[name]["size"]) <= 0 for name in REQUIRED_FILES):
+        vocabulary_name = next(name for name in sorted(VOCABULARY_FILES) if name in manifest)
+        required_names = [*REQUIRED_FILES, vocabulary_name]
+        if any(int(manifest[name]["size"]) <= 0 for name in required_names):
             raise ModelError("Model tidak ditemukan atau rusak.")
         return manifest
 
@@ -186,7 +201,7 @@ class ModelRegistry:
             raise ModelError("Paket model tidak dapat diverifikasi.") from exc
 
     def _verify_folder(self, folder: Path) -> dict[str, dict[str, Any]]:
-        missing = [name for name in REQUIRED_FILES if not (folder / name).is_file()]
+        missing = missing_model_files(folder)
         if missing:
             raise ModelError("Model tidak ditemukan atau rusak.")
         return {

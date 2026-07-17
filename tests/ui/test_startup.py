@@ -89,6 +89,21 @@ def test_safe_twenty_file_test_action_is_available(qtbot) -> None:
     assert "20" in window.test_button.toolTip()
 
 
+def test_direct_file_picker_and_drop_zone_are_available(qtbot, tmp_path: Path) -> None:
+    """Drag-and-drop has a visible, keyboard-accessible picker alternative."""
+    from app.ui.launch import MainWindow
+
+    paths = DataPaths(tmp_path / "data")
+    paths.ensure()
+    window = MainWindow(paths=paths)
+    qtbot.addWidget(window)
+
+    assert window.audio_drop_zone.acceptDrops() is True
+    assert window.add_audio_button.isEnabled() is True
+    assert "Pilih File Audio" in window.add_audio_button.text()
+    assert str(paths.output_dir) in window.output_path_label.text()
+
+
 def test_branded_navigation_and_preflight_are_present(qtbot, tmp_path: Path) -> None:
     """The DN treatment and safe model/file preflight are deliberate UI contracts."""
     from app.services.application_service import ApplicationService

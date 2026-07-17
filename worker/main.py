@@ -60,8 +60,13 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
         bundled_path("migrations"),
         paths.backups_dir,
     ).migrate()
-    if not cfg.paths.audio_roots:
-        _write_failed_status(paths, "Pilih dan simpan folder audio uji terlebih dahulu.")
+    roots = [
+        Path(raw).expanduser()
+        for raw in cfg.paths.audio_roots
+        if Path(raw).expanduser().is_dir()
+    ]
+    if not roots:
+        _write_failed_status(paths, "Tambahkan file audio atau pilih folder audio terlebih dahulu.")
         log.error("worker has no configured audio root")
         return 4
     model_directory = paths.models_dir / cfg.transcription.default_model
@@ -95,7 +100,7 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
             condition_on_previous_text=cfg.transcription.condition_on_previous_text,
         ),
         paths.worker_status_file,
-        Path(cfg.paths.audio_roots[0]),
+        active_roots=roots,
         model_name=cfg.transcription.default_model,
         model_hash=str(model_hash) if model_hash else None,
         language=cfg.transcription.language,

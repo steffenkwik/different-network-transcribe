@@ -52,6 +52,15 @@ class TestBatchSummary:
     scan: ScanSummary
 
 
+@dataclass(frozen=True)
+class DirectFileBatchSummary:
+    """An explicit local file batch added with the picker or drag-and-drop."""
+
+    source_count: int
+    selected_count: int
+    scan: ScanSummary
+
+
 class ApplicationService:
     """Orchestrates safe user operations without exposing infrastructure to Qt."""
 
@@ -73,10 +82,21 @@ class ApplicationService:
         config_mod.save(config, self.paths.config_file, self.paths.config_lastgood_file)
 
     def configured_audio_root(self) -> Path | None:
+        roots = self.configured_audio_roots()
+        return roots[0] if roots else None
+
+    def configured_audio_roots(self) -> list[Path]:
+        """Return the current explicitly selected locations, never an inferred scan root."""
         config = config_mod.load(self.paths.config_file, self.paths.config_lastgood_file)
-        if not config.paths.audio_roots:
-            return None
-        return Path(config.paths.audio_roots[0])
+        roots: list[Path] = []
+        seen: set[str] = set()
+        for raw in config.paths.audio_roots:
+            candidate = Path(raw).expanduser().resolve()
+            key = str(candidate).casefold()
+            if candidate.is_dir() and key not in seen:
+                roots.append(candidate)
+                seen.add(key)
+        return roots
 
     def configured_chat_root(self) -> Path | None:
         config = config_mod.load(self.paths.config_file, self.paths.config_lastgood_file)
@@ -111,6 +131,59 @@ class ApplicationService:
         finally:
             connection.close()
 
+    def add_audio_files(
+        self, files: list[Path], *, maximum_files: int = 20
+    ) -> DirectFileBatchSummary:
+        """Add a bounded, explicit list of local audio files without folder scanning.
+
+        The source files stay exactly where they are.  Their parent folders are
+        only stored as read-only locations so a worker can open each chosen file.
+        Replacing the active selection makes the requested files the only queued
+        candidates in those locations; it never touches completed transcripts.
+        """
+        selected = sorted({path.expanduser().resolve() for path in files}, key=lambda item: str(item).casefold())
+        if not selected:
+            raise ValueError("Pilih setidaknya satu file audio.")
+        if len(selected) > maximum_files:
+            raise ValueError(
+                f"Pilih maksimal {maximum_files} file per batch langsung. "
+                "Batas ini melindungi Anda dari transkripsi massal tidak sengaja."
+            )
+        invalid = [path.name for path in selected if not path.is_file() or path.suffix.casefold() not in SUPPORTED_AUDIO_EXTENSIONS]
+        if invalid:
+            raise ValueError("Ada file yang bukan audio didukung: " + ", ".join(invalid[:3]))
+
+        roots = sorted({path.parent for path in selected}, key=lambda item: str(item).casefold())
+        config = config_mod.load(self.paths.config_file, self.paths.config_lastgood_file)
+        config.paths.audio_roots = [str(root) for root in roots]
+        config_mod.save(config, self.paths.config_file, self.paths.config_lastgood_file)
+
+        connection = open_connection(self.paths.database_file)
+        try:
+            scan = DiscoveryService(connection).scan_audio_files(selected)
+            root_where, root_parameters = _source_root_filter(roots, "s.original_path")
+            rows = connection.execute(
+                """SELECT a.id, s.original_path, a.current_relative_path FROM audio_files AS a
+                   JOIN source_roots AS s ON s.id = a.source_root_id
+                   WHERE """ + root_where,
+                root_parameters,
+            ).fetchall()
+            selected_keys = {
+                (str(path.parent), path.name.casefold())
+                for path in selected
+            }
+            selected_ids = [
+                int(row["id"])
+                for row in rows
+                if (str(row["original_path"]), str(row["current_relative_path"])) in selected_keys
+            ]
+            enabled = TranscriptionSelectionRepository(connection).replace_with(roots, selected_ids)
+        finally:
+            connection.close()
+        return DirectFileBatchSummary(
+            source_count=len(selected), selected_count=enabled, scan=scan
+        )
+
     def prepare_test_batch(self, folder: Path, *, maximum_files: int = 20) -> TestBatchSummary:
         """Make a user-selected small folder the active test root and scan it.
 
@@ -142,19 +215,16 @@ class ApplicationService:
             connection.close()
 
     def dashboard_counts(self) -> DashboardCounts:
-        active_root = self.configured_audio_root()
+        active_roots = self.configured_audio_roots()
         connection = open_connection(self.paths.database_file, read_only=True)
         try:
+            where, parameters = _source_root_filter(active_roots, "s.original_path")
             rows = connection.execute(
                 """SELECT a.current_state, COUNT(*) AS total
                    FROM audio_files a
                    JOIN source_roots s ON s.id = a.source_root_id
-                   WHERE (? IS NULL OR s.original_path = ?)
-                   GROUP BY a.current_state""",
-                (
-                    None if active_root is None else str(active_root.resolve()),
-                    None if active_root is None else str(active_root.resolve()),
-                ),
+                   WHERE """ + where + " GROUP BY a.current_state",
+                parameters,
             ).fetchall()
         finally:
             connection.close()
@@ -175,45 +245,45 @@ class ApplicationService:
         connection = open_connection(self.paths.database_file, read_only=True)
         try:
             return TranscriptionSelectionRepository(connection).candidates(
-                self.configured_audio_root(), limit=limit, offset=offset
+                self.configured_audio_roots(), limit=limit, offset=offset
             )
         finally:
             connection.close()
 
     def set_transcription_selection(self, audio_file_ids: list[int], *, enabled: bool) -> int:
         """Persist an explicit selection without starting a worker or touching source files."""
-        root = self.configured_audio_root()
-        if root is None:
+        roots = self.configured_audio_roots()
+        if not roots:
             raise ValueError("Pilih folder audio terlebih dahulu.")
         connection = open_connection(self.paths.database_file)
         try:
             return TranscriptionSelectionRepository(connection).set_enabled(
-                root, audio_file_ids, enabled=enabled
+                roots, audio_file_ids, enabled=enabled
             )
         finally:
             connection.close()
 
     def replace_transcription_selection(self, selected_audio_file_ids: list[int]) -> int:
         """Choose an intentional small batch and exclude all other incomplete rows."""
-        root = self.configured_audio_root()
-        if root is None:
+        roots = self.configured_audio_roots()
+        if not roots:
             raise ValueError("Pilih folder audio terlebih dahulu.")
         connection = open_connection(self.paths.database_file)
         try:
             return TranscriptionSelectionRepository(connection).replace_with(
-                root, selected_audio_file_ids
+                roots, selected_audio_file_ids
             )
         finally:
             connection.close()
 
     def set_all_transcription_enabled(self, *, enabled: bool) -> int:
         """Explicit bulk opt-in for the full pending collection; never implicit."""
-        root = self.configured_audio_root()
-        if root is None:
+        roots = self.configured_audio_roots()
+        if not roots:
             raise ValueError("Pilih folder audio terlebih dahulu.")
         connection = open_connection(self.paths.database_file)
         try:
-            return TranscriptionSelectionRepository(connection).set_all_enabled(root, enabled=enabled)
+            return TranscriptionSelectionRepository(connection).set_all_enabled(roots, enabled=enabled)
         finally:
             connection.close()
 
@@ -246,7 +316,7 @@ class ApplicationService:
                 match_status=match_status,
                 whatsapp_date=whatsapp_date,
                 sort=sort,
-                source_root=self.configured_audio_root(),
+                source_roots=self.configured_audio_roots(),
             )
         finally:
             connection.close()
@@ -257,7 +327,7 @@ class ApplicationService:
             return TranscriptRepository(connection).list_page(
                 limit=limit,
                 offset=offset,
-                source_root=self.configured_audio_root(),
+                source_roots=self.configured_audio_roots(),
                 review_only=True,
             )
         finally:
@@ -463,11 +533,9 @@ class ApplicationService:
         return ModelRegistry(self.paths.models_dir).install_from_hub(key)
 
     def start_transcription(self) -> int:
-        root = self.configured_audio_root()
-        if root is None:
-            raise ValueError("Pilih dan simpan folder audio uji terlebih dahulu.")
-        if not root.is_dir():
-            raise ValueError("Folder audio yang dipilih sudah tidak dapat ditemukan.")
+        roots = self.configured_audio_roots()
+        if not roots:
+            raise ValueError("Tambahkan file audio atau pilih folder audio terlebih dahulu.")
         return self._worker_control().start()
 
     def pause_transcription(self) -> None:
@@ -513,3 +581,11 @@ def _optional_text(value: str | None) -> str | None:
     if value is None:
         return None
     return value.strip() or None
+
+
+def _source_root_filter(roots: list[Path], column: str) -> tuple[str, list[str]]:
+    """Build a parameterised multi-root filter; an empty selection means all roots."""
+    if not roots:
+        return "1 = 1", []
+    values = [str(root.resolve()) for root in roots]
+    return f"{column} IN ({','.join('?' for _ in values)})", values
