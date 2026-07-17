@@ -10,6 +10,7 @@ from datetime import timedelta
 from app.database.connection import transaction
 from app.database.repositories import now
 from app.transcription.engine import EngineResult
+from app.transcription.engine import engine_version as installed_engine_version
 from app.transcription.quality import QualityVerdict
 
 LIVE_STATES = {"idle", "starting", "running", "pausing", "paused", "stopping"}
@@ -160,8 +161,10 @@ class WorkerRepository:
         model_hash: str | None = None,
         language: str = "id",
         settings: dict[str, object] | None = None,
-        engine_version: str = "1.1.1",
+        engine_version: str | None = None,
     ) -> sqlite3.Row | None:
+        # A hard-coded version silently lies the moment the dependency moves.
+        engine_version = engine_version or installed_engine_version()
         root_where, root_parameters = _root_filter(active_root, active_roots, "s.original_path")
         with transaction(self.connection, immediate=True):
             audio = self.connection.execute(

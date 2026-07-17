@@ -46,6 +46,7 @@ WIZARD_WELCOME = (
 WIZARD_FINISH = "Different Network Transcribe siap digunakan."
 MODEL_SMALL_TITLE = "Small — Cepat, direkomendasikan"
 MODEL_MEDIUM_TITLE = "Medium — Lebih akurat, lebih lambat"
+MODEL_TURBO_TITLE = "Turbo — Akurat dan tetap cepat"
 MODEL_HIGH_TITLE = "High — Paling akurat, paling lambat"
 
 # --- Safety messages --------------------------------------------------------

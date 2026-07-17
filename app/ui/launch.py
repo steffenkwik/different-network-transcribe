@@ -6,13 +6,22 @@ cases.  It contains no SQL and never imports the transcription engine.
 
 from __future__ import annotations
 
-import json
+import os
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
-from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import (
+    QItemSelectionModel,
+    QSignalBlocker,
+    Qt,
+    QThread,
+    QTimer,
+    QUrl,
+    Signal,
+)
 from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDragLeaveEvent, QDropEvent
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -37,9 +46,12 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
+    QSpinBox,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
     QWizard,
@@ -47,9 +59,11 @@ from PySide6.QtWidgets import (
 )
 
 from app import config as config_mod
+from app.config import CPU_PRESETS
 from app.logging_setup import new_session_id, setup_logging
 from app.paths import DataPaths, default_data_root
 from app.resources import strings_id as S
+from app.services import worker_status
 from app.services.application_service import (
     ApplicationService,
     DirectFileBatchSummary,
@@ -70,14 +84,19 @@ class ServiceJob(QThread):
 
     succeeded = Signal(object)
     failed = Signal(str)
+    progressed = Signal(int, int)
 
-    def __init__(self, operation: Callable[[], object], parent: QWidget) -> None:
+    def __init__(self, operation: Callable[[ServiceJob], object], parent: QWidget) -> None:
         super().__init__(parent)
         self._operation = operation
 
+    def report(self, done: int, total: int) -> None:
+        """Publish progress from the worker thread; Qt queues it to the UI thread."""
+        self.progressed.emit(done, total)
+
     def run(self) -> None:
         try:
-            self.succeeded.emit(self._operation())
+            self.succeeded.emit(self._operation(self))
         except Exception as exc:  # The UI receives a safe service-level message only.
             self.failed.emit(str(exc) or "Operasi tidak dapat diselesaikan.")
 
@@ -105,7 +124,7 @@ class AudioDropZone(QFrame):
         layout.addWidget(title)
         helper = QLabel(
             "Atau pilih file dengan tombol di bawah. File tetap berada di lokasi asal, "
-            "dan batch langsung ditampilkan sebelum transkripsi. Maksimal 20 file per batch aman."
+            "dan seluruh batch ditampilkan untuk dikonfirmasi sebelum transkripsi dimulai."
         )
         helper.setObjectName("helperText")
         helper.setWordWrap(True)
@@ -230,6 +249,7 @@ class FirstRunWizard(QWizard):
         layout.addWidget(QLabel("Anda selalu memilih model lagi sebelum menekan Mulai."))
         layout.addWidget(QLabel(f"• {S.MODEL_SMALL_TITLE} — paling tepat untuk uji awal."))
         layout.addWidget(QLabel(f"• {S.MODEL_MEDIUM_TITLE} — untuk pemeriksaan yang lebih teliti."))
+        layout.addWidget(QLabel(f"• {S.MODEL_TURBO_TITLE} — pilihan terbaik untuk arsip besar."))
         layout.addWidget(QLabel(f"• {S.MODEL_HIGH_TITLE} — untuk akurasi tertinggi dengan waktu dan RAM lebih besar."))
         layout.addWidget(QLabel("Unduh atau impor model secara eksplisit dari Pengaturan & Data. Audio tidak pernah dikirim ke cloud."))
         return page
@@ -243,23 +263,36 @@ class FirstRunWizard(QWizard):
 
 
 class TranscriptionSetupDialog(QDialog):
-    """A deliberate, beginner-friendly preflight before the worker can start.
+    """The preflight that turns an archive into a deliberate run.
 
-    A user chooses the local model and either selects a safe batch (the default)
-    or makes an unmistakable opt-in to every incomplete file in the current root.
-    The list is bounded so a 13,000-file archive never freezes Qt.
+    Scope is chosen against the *query*, not the visible rows, so an archive of
+    thousands is one radio button rather than an impossible amount of clicking.
+    The table is paged for the same reason: putting 13,000 widgets in a
+    QTableWidget would freeze Qt for no benefit — nobody scrolls that far.
+
+    The old 20-file cap that lived here was a guard-rail for the coding agent
+    that built the app, and it made the product's actual purpose unreachable.
+    It is replaced by confirmation that scales with the size of the request.
     """
 
-    DISPLAY_LIMIT = 250
-    SAFE_BATCH_LIMIT = 20
+    PAGE_SIZE = 250
+    #: Batches larger than this need an explicit "yes, I mean it".
+    CONFIRM_THRESHOLD = 200
+    #: Above this, the confirmation also carries a duration estimate.
+    ESTIMATE_THRESHOLD = 2_000
+
+    SCOPE_SELECTED = "selected"
+    SCOPE_ALL = "all"
 
     def __init__(self, service: ApplicationService, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.service = service
-        self._candidate_ids: list[int] = []
+        self._offset = 0
+        self._candidate_total = 0
+        self._checked: set[int] = set()
         self._updating = False
         self.setWindowTitle("Siapkan Transkripsi")
-        self.resize(900, 690)
+        self.resize(960, 720)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
@@ -272,82 +305,27 @@ class TranscriptionSetupDialog(QDialog):
         heading.setObjectName("pageTitle")
         layout.addWidget(heading)
         helper = QLabel(
-            "Pilihan ini hanya memengaruhi file belum selesai. Transkrip yang sudah selesai tidak akan diulang kecuali Anda meminta proses ulang dari detail file."
+            "Pilihan ini hanya memengaruhi file belum selesai. Transkrip yang sudah selesai "
+            "tidak akan diulang kecuali Anda meminta proses ulang dari detail file."
         )
         helper.setObjectName("helperText")
         helper.setWordWrap(True)
         layout.addWidget(helper)
+        self.summary_label = QLabel()
+        self.summary_label.setObjectName("statusPill")
+        self.summary_label.setWordWrap(True)
+        layout.addWidget(self.summary_label)
 
-        self.model_status = self.service.model_status()
-        model_section = QFrame()
-        model_section.setObjectName("workflowCard")
-        model_layout = QHBoxLayout(model_section)
-        model_layout.setContentsMargins(16, 14, 16, 14)
-        model_copy = QVBoxLayout()
-        title = QLabel("1. Model lokal")
-        title.setObjectName("sectionTitle")
-        model_copy.addWidget(title)
-        model_copy.addWidget(QLabel("Model dimuat sekali oleh worker dan tetap berada di komputer ini."))
-        model_layout.addLayout(model_copy, 1)
-        self.model_buttons = {
-            "small": self._model_radio("small", S.MODEL_SMALL_TITLE, "Cepat; direkomendasikan untuk mulai."),
-            "medium": self._model_radio("medium", S.MODEL_MEDIUM_TITLE, "Lebih akurat; membutuhkan waktu lebih lama."),
-            "high": self._model_radio(
-                "high", S.MODEL_HIGH_TITLE, "Paling akurat; paling lambat dan membutuhkan RAM/disk lebih besar."
-            ),
-        }
-        self.model_group = QButtonGroup(self)
-        for button in self.model_buttons.values():
-            self.model_group.addButton(button)
-            model_layout.addWidget(button)
-        layout.addWidget(model_section)
+        layout.addWidget(self._model_section())
+        layout.addWidget(self._scope_section())
+        layout.addLayout(self._table_actions())
+        layout.addWidget(self._file_table(), 1)
+        layout.addLayout(self._pagination())
 
-        files_heading = QHBoxLayout()
-        files_title = QLabel("2. Pilih file")
-        files_title.setObjectName("sectionTitle")
-        files_heading.addWidget(files_title)
-        files_heading.addStretch(1)
-        self.selection_count_label = QLabel()
-        self.selection_count_label.setObjectName("statusPill")
-        files_heading.addWidget(self.selection_count_label)
-        layout.addLayout(files_heading)
-
-        self.process_all = QCheckBox("Saya ingin mengaktifkan semua file belum selesai di folder ini")
-        self.process_all.setToolTip(
-            "Opsi ini menyalakan seluruh file belum selesai. Konfirmasi tambahan diperlukan agar koleksi besar tidak terproses tanpa sengaja."
-        )
-        self.process_all.toggled.connect(self._toggle_all_mode)
-        layout.addWidget(self.process_all)
-        self.confirm_all = QCheckBox("Saya memahami bahwa ini dapat memproses batch besar dan memakan waktu lama.")
-        self.confirm_all.setVisible(False)
-        self.confirm_all.toggled.connect(self._update_start_state)
-        layout.addWidget(self.confirm_all)
-
-        table_actions = QHBoxLayout()
-        self.select_visible_button = QPushButton("Centang semua yang terlihat")
-        self.select_visible_button.clicked.connect(lambda: self._check_visible(True))
-        self.clear_visible_button = QPushButton("Kosongkan pilihan")
-        self.clear_visible_button.clicked.connect(lambda: self._check_visible(False))
-        table_actions.addWidget(self.select_visible_button)
-        table_actions.addWidget(self.clear_visible_button)
-        table_actions.addStretch(1)
-        self.file_help = QLabel()
-        self.file_help.setObjectName("subtle")
-        table_actions.addWidget(self.file_help)
-        layout.addLayout(table_actions)
-
-        self.file_table = QTableWidget(0, 5)
-        self.file_table.setHorizontalHeaderLabels(["Proses", "Nama file", "Durasi", "Status", "Lokasi relatif"])
-        self.file_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.file_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.file_table.itemChanged.connect(self._selection_changed)
-        header = self.file_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self.file_table, 1)
+        self.confirm_large = QCheckBox()
+        self.confirm_large.setVisible(False)
+        self.confirm_large.toggled.connect(self._update_start_state)
+        layout.addWidget(self.confirm_large)
 
         self.validation_label = QLabel()
         self.validation_label.setObjectName("helperText")
@@ -362,7 +340,106 @@ class TranscriptionSetupDialog(QDialog):
         layout.addWidget(buttons)
 
         self._load_models()
-        self._load_candidates()
+        self._load_page()
+
+    # ---------------------------------------------------------------- layout
+
+    def _model_section(self) -> QFrame:
+        self.model_status = self.service.model_status()
+        section = QFrame()
+        section.setObjectName("workflowCard")
+        model_layout = QHBoxLayout(section)
+        model_layout.setContentsMargins(16, 14, 16, 14)
+        copy = QVBoxLayout()
+        title = QLabel("1. Model lokal")
+        title.setObjectName("sectionTitle")
+        copy.addWidget(title)
+        copy.addWidget(QLabel("Model dimuat sekali oleh worker dan tetap berada di komputer ini."))
+        model_layout.addLayout(copy, 1)
+        self.model_buttons = {
+            key: self._model_radio(key, title, description)
+            for key, title, description in (
+                ("small", S.MODEL_SMALL_TITLE, "Cepat; direkomendasikan untuk mulai."),
+                ("medium", S.MODEL_MEDIUM_TITLE, "Lebih akurat; membutuhkan waktu lebih lama."),
+                ("turbo", S.MODEL_TURBO_TITLE, "Akurasi tinggi dengan kecepatan mendekati Small."),
+                ("high", S.MODEL_HIGH_TITLE, "Paling akurat; paling lambat dan butuh RAM/disk lebih besar."),
+            )
+        }
+        self.model_group = QButtonGroup(self)
+        for button in self.model_buttons.values():
+            self.model_group.addButton(button)
+            model_layout.addWidget(button)
+        return section
+
+    def _scope_section(self) -> QFrame:
+        section = QFrame()
+        section.setObjectName("workflowCard")
+        scope_layout = QVBoxLayout(section)
+        scope_layout.setContentsMargins(16, 14, 16, 14)
+        title = QLabel("2. Cakupan")
+        title.setObjectName("sectionTitle")
+        scope_layout.addWidget(title)
+        self.scope_all = QRadioButton()
+        self.scope_all.setProperty("scope", self.SCOPE_ALL)
+        self.scope_all.setToolTip(
+            "Mengaktifkan seluruh file belum selesai di folder yang sedang aktif. "
+            "File yang sudah selesai tidak pernah diulang."
+        )
+        self.scope_selected = QRadioButton("Hanya file yang saya centang di daftar bawah")
+        self.scope_selected.setProperty("scope", self.SCOPE_SELECTED)
+        self.scope_group = QButtonGroup(self)
+        for button in (self.scope_all, self.scope_selected):
+            self.scope_group.addButton(button)
+            scope_layout.addWidget(button)
+        self.scope_all.setChecked(True)
+        self.scope_group.buttonClicked.connect(self._scope_changed)
+        return section
+
+    def _table_actions(self) -> QHBoxLayout:
+        actions = QHBoxLayout()
+        self.select_visible_button = QPushButton("Centang halaman ini")
+        self.select_visible_button.clicked.connect(lambda: self._check_visible(True))
+        self.clear_selection_button = QPushButton("Kosongkan semua centang")
+        self.clear_selection_button.clicked.connect(self._clear_all_checks)
+        actions.addWidget(self.select_visible_button)
+        actions.addWidget(self.clear_selection_button)
+        actions.addStretch(1)
+        self.selection_count_label = QLabel()
+        self.selection_count_label.setObjectName("statusPill")
+        actions.addWidget(self.selection_count_label)
+        return actions
+
+    def _file_table(self) -> QTableWidget:
+        self.file_table = QTableWidget(0, 5)
+        self.file_table.setHorizontalHeaderLabels(
+            ["Proses", "Nama file", "Durasi", "Status", "Lokasi relatif"]
+        )
+        self.file_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.file_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.file_table.itemChanged.connect(self._selection_changed)
+        header = self.file_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        return self.file_table
+
+    def _pagination(self) -> QHBoxLayout:
+        pagination = QHBoxLayout()
+        self.previous_button = QPushButton("Sebelumnya")
+        self.previous_button.clicked.connect(self._previous_page)
+        self.next_button = QPushButton("Berikutnya")
+        self.next_button.clicked.connect(self._next_page)
+        pagination.addWidget(self.previous_button)
+        pagination.addWidget(self.next_button)
+        self.file_help = QLabel()
+        self.file_help.setObjectName("subtle")
+        pagination.addWidget(self.file_help)
+        pagination.addStretch(1)
+        return pagination
+
+    # ----------------------------------------------------------------- data
 
     def _model_radio(self, key: str, title: str, description: str) -> QRadioButton:
         models = self.model_status.get("models", {})
@@ -372,7 +449,11 @@ class TranscriptionSetupDialog(QDialog):
         radio = QRadioButton(label)
         radio.setProperty("modelKey", key)
         radio.setEnabled(installed)
-        radio.setToolTip("Model belum terpasang. Buka Pengaturan & Data untuk unduh atau impor." if not installed else title)
+        radio.setToolTip(
+            "Model belum terpasang. Buka Pengaturan & Data untuk unduh atau impor."
+            if not installed
+            else title
+        )
         return radio
 
     def _load_models(self) -> None:
@@ -387,111 +468,163 @@ class TranscriptionSetupDialog(QDialog):
                     break
         self.model_group.buttonClicked.connect(self._update_start_state)
 
-    def _load_candidates(self) -> None:
-        page = self.service.transcription_candidates(limit=self.DISPLAY_LIMIT)
+    def selected_model(self) -> str | None:
+        button = self.model_group.checkedButton()
+        return None if button is None else str(button.property("modelKey"))
+
+    def scope(self) -> str:
+        button = self.scope_group.checkedButton()
+        return self.SCOPE_ALL if button is None else str(button.property("scope"))
+
+    def _load_page(self) -> None:
+        page = self.service.transcription_candidates(limit=self.PAGE_SIZE, offset=self._offset)
         self._candidate_total = page.total
         self._updating = True
-        self.file_table.setRowCount(len(page.rows))
-        selected_by_default = 0
-        for index, row in enumerate(page.rows):
-            audio_id = int(row["id"])
-            self._candidate_ids.append(audio_id)
-            check = QTableWidgetItem()
-            check.setData(Qt.ItemDataRole.UserRole, audio_id)
-            currently_enabled = bool(row["transcription_enabled"])
-            # A safe initial view selects at most 20 files; current selection is
-            # respected only within that same safe cap.
-            selected = currently_enabled and selected_by_default < self.SAFE_BATCH_LIMIT
-            if selected:
-                selected_by_default += 1
-            check.setCheckState(Qt.CheckState.Checked if selected else Qt.CheckState.Unchecked)
-            self.file_table.setItem(index, 0, check)
-            self.file_table.setItem(index, 1, QTableWidgetItem(str(row["basename"])))
-            duration = row["duration_seconds"]
-            duration_text = "-" if duration is None else f"{float(duration):.1f} dtk"
-            self.file_table.setItem(index, 2, QTableWidgetItem(duration_text))
-            self.file_table.setItem(index, 3, QTableWidgetItem(str(row["current_state"])))
-            self.file_table.setItem(index, 4, QTableWidgetItem(str(row["current_relative_path"])))
-        self._updating = False
-        if page.total == 0:
-            self.file_help.setText(
-                "Belum ada file siap diproses. Tambahkan file audio dari Beranda, "
-                "tarik dan lepas file, atau lakukan Scan File Baru."
-            )
-        elif page.total > self.DISPLAY_LIMIT:
-            self.file_help.setText(f"Menampilkan {self.DISPLAY_LIMIT} dari {page.total} file; mode aman hanya memilih maks. 20.")
-        else:
-            self.file_help.setText(f"{page.total} file belum selesai ditemukan. Mode aman: maks. {self.SAFE_BATCH_LIMIT} file.")
+        try:
+            self.file_table.setRowCount(len(page.rows))
+            for index, row in enumerate(page.rows):
+                audio_id = int(row["id"])
+                check = QTableWidgetItem()
+                check.setData(Qt.ItemDataRole.UserRole, audio_id)
+                check.setCheckState(
+                    Qt.CheckState.Checked if audio_id in self._checked else Qt.CheckState.Unchecked
+                )
+                self.file_table.setItem(index, 0, check)
+                self.file_table.setItem(index, 1, QTableWidgetItem(str(row["basename"])))
+                duration = row["duration_seconds"]
+                duration_text = "-" if duration is None else f"{float(duration):.1f} dtk"
+                self.file_table.setItem(index, 2, QTableWidgetItem(duration_text))
+                self.file_table.setItem(index, 3, QTableWidgetItem(str(row["current_state"])))
+                self.file_table.setItem(index, 4, QTableWidgetItem(str(row["current_relative_path"])))
+        finally:
+            self._updating = False
+        self.scope_all.setText(f"Semua file belum selesai ({self._candidate_total:,} file)".replace(",", "."))
+        first = 0 if self._candidate_total == 0 else self._offset + 1
+        last = min(self._candidate_total, self._offset + self.PAGE_SIZE)
+        self.file_help.setText(f"Menampilkan {first}-{last} dari {self._candidate_total}")
+        self.previous_button.setEnabled(self._offset > 0)
+        self.next_button.setEnabled(self._offset + self.PAGE_SIZE < self._candidate_total)
         self._update_start_state()
 
-    def _checked_ids(self) -> list[int]:
-        ids: list[int] = []
-        for row in range(self.file_table.rowCount()):
-            item = self.file_table.item(row, 0)
-            if item is not None and item.checkState() == Qt.CheckState.Checked:
-                value = item.data(Qt.ItemDataRole.UserRole)
-                if isinstance(value, int):
-                    ids.append(value)
-        return ids
+    def _previous_page(self) -> None:
+        self._offset = max(0, self._offset - self.PAGE_SIZE)
+        self._load_page()
+
+    def _next_page(self) -> None:
+        self._offset += self.PAGE_SIZE
+        self._load_page()
+
+    # ------------------------------------------------------------ selection
+
+    def _selection_changed(self, item: QTableWidgetItem) -> None:
+        """Track ticks in a set so they survive paging."""
+        if self._updating or item.column() != 0:
+            return
+        audio_id = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(audio_id, int):
+            return
+        if item.checkState() == Qt.CheckState.Checked:
+            self._checked.add(audio_id)
+        else:
+            self._checked.discard(audio_id)
+        self._update_start_state()
 
     def _check_visible(self, checked: bool) -> None:
         self._updating = True
-        for row in range(self.file_table.rowCount()):
-            item = self.file_table.item(row, 0)
-            if item is not None:
+        try:
+            for row in range(self.file_table.rowCount()):
+                item = self.file_table.item(row, 0)
+                if item is None:
+                    continue
                 item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
-        self._updating = False
+                audio_id = item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(audio_id, int):
+                    if checked:
+                        self._checked.add(audio_id)
+                    else:
+                        self._checked.discard(audio_id)
+        finally:
+            self._updating = False
         self._update_start_state()
 
-    def _selection_changed(self, _: QTableWidgetItem) -> None:
-        if not self._updating:
-            self._update_start_state()
+    def _clear_all_checks(self) -> None:
+        self._checked.clear()
+        self._load_page()
 
-    def _toggle_all_mode(self, checked: bool) -> None:
-        self.file_table.setEnabled(not checked)
-        self.select_visible_button.setEnabled(not checked)
-        self.clear_visible_button.setEnabled(not checked)
-        self.confirm_all.setVisible(checked and self._candidate_total > self.SAFE_BATCH_LIMIT)
-        if not checked:
-            self.confirm_all.setChecked(False)
+    def _scope_changed(self, *_: object) -> None:
+        selecting = self.scope() == self.SCOPE_SELECTED
+        self.file_table.setEnabled(selecting)
+        self.select_visible_button.setEnabled(selecting)
+        self.clear_selection_button.setEnabled(selecting)
         self._update_start_state()
+
+    # --------------------------------------------------------------- gating
+
+    def planned_count(self) -> int:
+        return self._candidate_total if self.scope() == self.SCOPE_ALL else len(self._checked)
 
     def _update_start_state(self, *_: object) -> None:
-        selected = len(self._checked_ids())
-        installed_model = self.model_group.checkedButton() is not None
-        if self.process_all.isChecked():
-            allowed = self._candidate_total > 0 and installed_model and (
-                self._candidate_total <= self.SAFE_BATCH_LIMIT or self.confirm_all.isChecked()
+        planned = self.planned_count()
+        model_key = self.selected_model()
+        self.selection_count_label.setText(f"{planned:,} akan diproses".replace(",", "."))
+
+        needs_confirmation = planned > self.CONFIRM_THRESHOLD
+        self.confirm_large.setVisible(needs_confirmation)
+        if not needs_confirmation and self.confirm_large.isChecked():
+            self.confirm_large.setChecked(False)
+        if needs_confirmation:
+            self.confirm_large.setText(
+                f"Saya mengerti ini akan memproses {planned:,} file dan berjalan lama.".replace(",", ".")
             )
-            message = (
-                f"Seluruh {self._candidate_total} file belum selesai akan diaktifkan."
-                if allowed
-                else "Centang konfirmasi untuk menjalankan batch besar."
+
+        if model_key is None:
+            self.summary_label.setText("Belum ada model terpasang.")
+            self.validation_label.setText(
+                "Pasang salah satu model terlebih dahulu di Pengaturan & Data."
             )
-        else:
-            allowed = 0 < selected <= self.SAFE_BATCH_LIMIT and installed_model
-            message = (
-                f"{selected} file akan diproses dalam batch aman."
-                if selected <= self.SAFE_BATCH_LIMIT
-                else f"Pilih maksimal {self.SAFE_BATCH_LIMIT} file untuk batch aman, atau gunakan opsi semua file dengan konfirmasi."
+            self.start_button.setEnabled(False)
+            return
+
+        self.summary_label.setText(self._forecast_text(planned, model_key))
+        if planned == 0:
+            self.validation_label.setText(
+                "Belum ada file yang dipilih. Tambahkan audio dari Beranda, tarik dan lepas file, "
+                "atau lakukan Scan File Baru."
+                if self._candidate_total == 0
+                else "Centang minimal satu file, atau pilih cakupan semua file."
             )
-        if not installed_model:
-            message = "Pasang Small, Medium, atau High terlebih dahulu di Pengaturan & Data."
-        self.selection_count_label.setText("Semua file" if self.process_all.isChecked() else f"{selected} dipilih")
-        self.validation_label.setText(message)
-        self.start_button.setEnabled(allowed)
+            self.start_button.setEnabled(False)
+            return
+        if needs_confirmation and not self.confirm_large.isChecked():
+            self.validation_label.setText("Centang konfirmasi di atas untuk menjalankan batch besar.")
+            self.start_button.setEnabled(False)
+            return
+        self.validation_label.setText(
+            "File yang tidak dipilih disimpan sebagai dikecualikan dan tidak ikut antrean."
+        )
+        self.start_button.setEnabled(True)
+
+    def _forecast_text(self, planned: int, model_key: str) -> str:
+        if planned == 0:
+            return f"{self._candidate_total:,} file belum selesai di folder aktif.".replace(",", ".")
+        estimate = self.service.run_estimate(model_key)
+        readable = worker_status.format_duration(estimate.total_seconds(planned))
+        if planned <= self.ESTIMATE_THRESHOLD and not estimate.measured:
+            # Below the threshold a rough guess adds noise rather than help.
+            return f"{planned:,} file akan diproses.".replace(",", ".")
+        basis = "berdasarkan kecepatan komputer ini" if estimate.measured else "perkiraan kasar"
+        return f"{planned:,} file · perkiraan ±{readable} ({basis})".replace(",", ".")
 
     def _commit_and_accept(self) -> None:
-        button = self.model_group.checkedButton()
-        if button is None:
+        model_key = self.selected_model()
+        if model_key is None:
             return
-        key = str(button.property("modelKey"))
         try:
-            self.service.set_default_model(key)
-            if self.process_all.isChecked():
+            self.service.set_default_model(model_key)
+            if self.scope() == self.SCOPE_ALL:
                 self.service.set_all_transcription_enabled(enabled=True)
             else:
-                self.service.replace_transcription_selection(self._checked_ids())
+                self.service.replace_transcription_selection(sorted(self._checked))
         except (RuntimeError, ValueError) as exc:
             QMessageBox.warning(self, APP_NAME, str(exc))  # type: ignore[call-arg]
             return
@@ -499,7 +632,14 @@ class TranscriptionSetupDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
+    #: Fallbacks only; the live values come from config via `ui_settings()`.
     PAGE_SIZE = 100
+    STATUS_TICK_MS = 750
+    #: The slowest acceptable staleness for tables/metrics while a worker runs.
+    AUTO_REFRESH_SECONDS = 5.0
+    #: Typing in a search box should not run a query per keystroke.
+    SEARCH_DEBOUNCE_MS = 300
+    SETTINGS_PAGE_INDEX = 3
 
     def __init__(self, paths: DataPaths | None = None, service: ApplicationService | None = None) -> None:
         super().__init__()
@@ -508,6 +648,14 @@ class MainWindow(QMainWindow):
         self._jobs: set[ServiceJob] = set()
         self._page_offset = 0
         self._review_offset = 0
+        self._table_fingerprints: dict[int, tuple[object, ...]] = {}
+        self._worker_active = False
+        self._last_data_refresh = 0.0
+        # Honour the two UI settings the config has always validated; leaving
+        # them unread made them a promise the app never kept.
+        ui_config = service.ui_settings() if service is not None else config_mod.UiConfig()
+        self.page_size = ui_config.page_size
+        self.status_tick_ms = ui_config.poll_interval_ms
         self._audio_output = QAudioOutput(self)
         self._player = QMediaPlayer(self)
         self._player.setAudioOutput(self._audio_output)
@@ -569,15 +717,37 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._settings())
         self.setCentralWidget(central)
         self._sync_navigation(0)
+        self._search_debounce = QTimer(self)
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(self.SEARCH_DEBOUNCE_MS)
+        self._search_debounce.timeout.connect(self._reset_paging)
         self._worker_status_timer = QTimer(self)
-        self._worker_status_timer.setInterval(750)
-        self._worker_status_timer.timeout.connect(self.refresh)
+        self._worker_status_timer.setInterval(self.status_tick_ms)
+        self._worker_status_timer.timeout.connect(self._tick)
         self._worker_status_timer.start()
+
+    def _tick(self) -> None:
+        """Cheap periodic work only.
+
+        Repopulating tables on every tick used to discard the user's row
+        selection and overwrite the settings fields while they were typing, so
+        the tick now reads the small status file and refreshes heavy data only
+        while a worker is actually changing it.
+        """
+        self._refresh_worker_status()
+        if self.service is None or not self._worker_active:
+            return
+        if time.monotonic() - self._last_data_refresh >= self.AUTO_REFRESH_SECONDS:
+            self.refresh()
 
     def _sync_navigation(self, current_index: int) -> None:
         """Keep the selected sidebar destination obvious for mouse and keyboard users."""
         for index, button in enumerate(self._nav_buttons):
             button.setChecked(index == current_index)
+        if current_index == self.SETTINGS_PAGE_INDEX:
+            # Folder fields are loaded on entry only; a timer must never
+            # overwrite a path the user is in the middle of typing.
+            self._load_settings_fields()
 
     def _home(self) -> QWidget:
         page = QWidget()
@@ -608,12 +778,21 @@ class MainWindow(QMainWindow):
         self.metric_total = self._metric_card("Total VN", "0")
         self.metric_done = self._metric_card("Selesai", "0", accent=True)
         self.metric_pending = self._metric_card("Belum diproses", "0")
-        self.metric_review = self._metric_card("Perlu diperiksa", "0")
+        self.metric_review = self._metric_card("Perlu ditinjau", "0")
+        self.metric_review.setToolTip(
+            "Jumlah yang sama dengan halaman Perlu Ditinjau. Angka ini bisa beririsan "
+            "dengan Selesai, karena transkrip yang sudah jadi pun bisa perlu diperiksa."
+        )
         metrics.addWidget(self.metric_total, 0, 0)
         metrics.addWidget(self.metric_done, 0, 1)
         metrics.addWidget(self.metric_pending, 0, 2)
         metrics.addWidget(self.metric_review, 0, 3)
         layout.addLayout(metrics)
+        # Without this line the four cards silently fail to add up to Total VN.
+        self.metric_breakdown = QLabel()
+        self.metric_breakdown.setObjectName("subtle")
+        self.metric_breakdown.setWordWrap(True)
+        layout.addWidget(self.metric_breakdown)
 
         add_files_card = QFrame()
         add_files_card.setObjectName("workflowCard")
@@ -634,7 +813,10 @@ class MainWindow(QMainWindow):
         add_files_copy.addWidget(add_files_info)
         add_files_heading.addLayout(add_files_copy, 1)
         self.add_audio_button = QPushButton("Pilih File Audio")
-        self.add_audio_button.setToolTip("Pilih sampai 20 file audio untuk batch aman.")
+        self.add_audio_button.setToolTip(
+            "Pilih satu file atau ribuan sekaligus. Tidak ada yang diproses sebelum Anda "
+            "memilih model dan menekan Mulai."
+        )
         self.add_audio_button.clicked.connect(self._choose_audio_files)
         add_files_heading.addWidget(self.add_audio_button)
         add_files_layout.addLayout(add_files_heading)
@@ -776,10 +958,10 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Cari nama file, pengirim, atau chat")
-        self.search_input.textChanged.connect(self._reset_paging)
+        self.search_input.textChanged.connect(self._queue_search_refresh)
         self.transcript_search_input = QLineEdit()
         self.transcript_search_input.setPlaceholderText("Cari isi transkrip")
-        self.transcript_search_input.textChanged.connect(self._reset_paging)
+        self.transcript_search_input.textChanged.connect(self._queue_search_refresh)
         self.state_filter = QComboBox()
         self.state_filter.addItem("Semua status", None)
         for label, value in (
@@ -800,9 +982,8 @@ class MainWindow(QMainWindow):
         self.quality_filter.currentIndexChanged.connect(self._reset_paging)
         self.model_filter = QComboBox()
         self.model_filter.addItem("Semua model", None)
-        self.model_filter.addItem("Small", "small")
-        self.model_filter.addItem("Medium", "medium")
-        self.model_filter.addItem("High", "high")
+        for key in MODELS:
+            self.model_filter.addItem(key.capitalize(), key)
         self.model_filter.currentIndexChanged.connect(self._reset_paging)
         self.match_filter = QComboBox()
         self.match_filter.addItem("Semua metadata", None)
@@ -905,74 +1086,238 @@ class MainWindow(QMainWindow):
         return table
 
     def _settings(self) -> QWidget:
+        """Grouped settings where every visible control genuinely takes effect.
+
+        The previous page was a flat column of buttons that exposed folders and
+        models only, while the config file carried validated settings nothing
+        ever read. A setting that does not do what it says is worse than a
+        missing one, so anything shown here is wired through to the engine,
+        the exporter, or the queue.
+        """
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(30, 28, 30, 28)
-        layout.setSpacing(10)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(30, 28, 30, 28)
+        outer.setSpacing(10)
         eyebrow = QLabel("KONFIGURASI LOKAL")
         eyebrow.setObjectName("eyebrow")
-        layout.addWidget(eyebrow)
+        outer.addWidget(eyebrow)
         title = QLabel(S.NAV_SETTINGS)
         title.setObjectName("pageTitle")
-        layout.addWidget(title)
-        model_notice = QLabel(S.MODEL_CHANGE_NOTICE)
-        model_notice.setObjectName("helperText")
-        model_notice.setWordWrap(True)
-        layout.addWidget(model_notice)
+        outer.addWidget(title)
 
-        layout.addWidget(QLabel("Folder audio"))
+        tabs = QTabWidget()
+        tabs.addTab(self._settings_sources_tab(), "Sumber Data")
+        tabs.addTab(self._settings_transcription_tab(), "Transkripsi")
+        tabs.addTab(self._settings_export_tab(), "Ekspor")
+        tabs.addTab(self._settings_data_tab(), "Data && Diagnostik")
+        outer.addWidget(tabs, 1)
+        return page
+
+    @staticmethod
+    def _scroll(inner: QWidget) -> QScrollArea:
+        """Keep a tab usable on a small laptop screen."""
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.Shape.NoFrame)
+        area.setWidget(inner)
+        return area
+
+    def _settings_sources_tab(self) -> QWidget:
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(4, 12, 4, 12)
+        layout.setSpacing(10)
+
+        audio_title = QLabel("Folder arsip audio")
+        audio_title.setObjectName("sectionTitle")
+        layout.addWidget(audio_title)
+        audio_help = QLabel(
+            "Folder ini yang dipindai oleh Scan File Baru. File yang Anda tambahkan lewat "
+            "Pilih File Audio tidak pernah menggantikannya."
+        )
+        audio_help.setObjectName("helperText")
+        audio_help.setWordWrap(True)
+        layout.addWidget(audio_help)
         self.audio_root = QLineEdit()
         self.audio_root.setPlaceholderText("Belum ada folder audio")
+        layout.addWidget(self.audio_root)
+        audio_actions = QHBoxLayout()
         choose_audio = QPushButton("Pilih Folder Audio")
         choose_audio.clicked.connect(self._choose_audio_root)
         save_audio = QPushButton("Simpan Folder Audio")
         save_audio.clicked.connect(self._save_audio_root)
-        layout.addWidget(self.audio_root)
-        layout.addWidget(choose_audio)
-        layout.addWidget(save_audio)
+        audio_actions.addWidget(choose_audio)
+        audio_actions.addWidget(save_audio)
+        audio_actions.addStretch(1)
+        layout.addLayout(audio_actions)
 
-        layout.addWidget(QLabel("Folder ekspor chat WhatsApp"))
+        direct_title = QLabel("Folder batch langsung")
+        direct_title.setObjectName("sectionTitle")
+        layout.addWidget(direct_title)
+        self.direct_roots_label = QLabel()
+        self.direct_roots_label.setObjectName("subtle")
+        self.direct_roots_label.setWordWrap(True)
+        layout.addWidget(self.direct_roots_label)
+        clear_direct = QPushButton("Bersihkan Folder Batch Langsung")
+        clear_direct.setToolTip(
+            "Mengeluarkan folder tersebut dari cakupan. Tidak ada file audio yang dihapus."
+        )
+        clear_direct.clicked.connect(self._clear_direct_roots)
+        layout.addWidget(clear_direct, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        chat_title = QLabel("Folder ekspor chat WhatsApp")
+        chat_title.setObjectName("sectionTitle")
+        layout.addWidget(chat_title)
         self.chat_root = QLineEdit()
         self.chat_root.setPlaceholderText("Opsional: folder berisi ekspor chat .txt")
-        choose_chat = QPushButton("Pilih Folder Ekspor Chat")
-        choose_chat.clicked.connect(self._choose_chat_root)
-        save_chat = QPushButton("Simpan Folder Ekspor Chat")
-        save_chat.clicked.connect(self._save_chat_root)
-        scan_chat = QPushButton("Scan Ekspor Chat")
-        scan_chat.clicked.connect(self._scan_chats)
-        match = QPushButton("Cocokkan Metadata")
-        match.clicked.connect(self._match_metadata)
         layout.addWidget(self.chat_root)
-        layout.addWidget(choose_chat)
-        layout.addWidget(save_chat)
-        layout.addWidget(scan_chat)
-        layout.addWidget(match)
-
-        self.model_status_label = QLabel("Status model belum dibaca.")
-        choose_default = QPushButton("Pilih Model Default")
-        choose_default.clicked.connect(self._choose_default_model)
-        download_model = QPushButton("Unduh Model")
-        download_model.clicked.connect(self._download_model)
-        import_model = QPushButton("Impor Model ZIP")
-        import_model.clicked.connect(self._import_model)
-        layout.addWidget(self.model_status_label)
-        layout.addWidget(choose_default)
-        layout.addWidget(download_model)
-        layout.addWidget(import_model)
-
-        backup = QPushButton("Backup Sekarang")
-        backup.clicked.connect(self._backup)
-        restore = QPushButton("Pulihkan Paket")
-        restore.clicked.connect(self._restore)
-        diagnostics = QPushButton("Buat Paket Diagnostik Aman")
-        diagnostics.clicked.connect(self._diagnostics)
-        layout.addWidget(backup)
-        layout.addWidget(restore)
-        layout.addWidget(diagnostics)
+        chat_actions = QHBoxLayout()
+        for label, slot in (
+            ("Pilih Folder Ekspor Chat", self._choose_chat_root),
+            ("Simpan Folder Ekspor Chat", self._save_chat_root),
+            ("Scan Ekspor Chat", self._scan_chats),
+            ("Cocokkan Metadata", self._match_metadata),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(slot)
+            chat_actions.addWidget(button)
+        chat_actions.addStretch(1)
+        layout.addLayout(chat_actions)
         layout.addStretch(1)
-        return page
+        return self._scroll(inner)
+
+    def _settings_transcription_tab(self) -> QWidget:
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(4, 12, 4, 12)
+        layout.setSpacing(10)
+
+        model_notice = QLabel(S.MODEL_CHANGE_NOTICE)
+        model_notice.setObjectName("helperText")
+        model_notice.setWordWrap(True)
+        layout.addWidget(model_notice)
+        self.model_status_label = QLabel("Status model belum dibaca.")
+        self.model_status_label.setWordWrap(True)
+        layout.addWidget(self.model_status_label)
+        model_actions = QHBoxLayout()
+        for label, slot in (
+            ("Pilih Model Default", self._choose_default_model),
+            ("Unduh Model", self._download_model),
+            ("Impor Model ZIP", self._import_model),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(slot)
+            model_actions.addWidget(button)
+        model_actions.addStretch(1)
+        layout.addLayout(model_actions)
+
+        form = QFormLayout()
+        self.language_choice = QComboBox()
+        self.language_choice.addItem("Indonesia (id)", "id")
+        self.language_choice.addItem("Deteksi otomatis", "auto")
+        form.addRow("Bahasa", self.language_choice)
+
+        self.task_choice = QComboBox()
+        self.task_choice.addItem("Transkripsi (bahasa asli)", "transcribe")
+        self.task_choice.addItem("Terjemahkan ke Inggris", "translate")
+        self.task_choice.setToolTip(
+            "Whisper hanya bisa menerjemahkan ke bahasa Inggris. Semuanya tetap berjalan di komputer ini."
+        )
+        form.addRow("Mode", self.task_choice)
+
+        self.cpu_choice = QComboBox()
+        for preset in CPU_PRESETS:
+            self.cpu_choice.addItem(preset.capitalize(), preset)
+        self.cpu_choice.currentIndexChanged.connect(self._preview_cpu_threads)
+        form.addRow("Penggunaan CPU", self.cpu_choice)
+        self.cpu_threads_label = QLabel()
+        self.cpu_threads_label.setObjectName("subtle")
+        form.addRow("", self.cpu_threads_label)
+
+        self.batched_choice = QCheckBox("Proses dalam batch (lebih cepat, butuh RAM lebih)")
+        form.addRow("Kecepatan", self.batched_choice)
+        self.batch_size_choice = QSpinBox()
+        self.batch_size_choice.setRange(1, 32)
+        form.addRow("Ukuran batch", self.batch_size_choice)
+        self.vad_choice = QCheckBox("Lewati bagian tanpa suara (disarankan)")
+        form.addRow("VAD", self.vad_choice)
+        self.beam_choice = QSpinBox()
+        self.beam_choice.setRange(1, 10)
+        self.beam_choice.setToolTip("Nilai lebih tinggi sedikit lebih akurat dan lebih lambat.")
+        form.addRow("Beam size", self.beam_choice)
+        layout.addLayout(form)
+
+        save = QPushButton("Simpan Pengaturan Transkripsi")
+        save.setObjectName("primaryButton")
+        save.clicked.connect(self._save_transcription_settings)
+        layout.addWidget(save, alignment=Qt.AlignmentFlag.AlignLeft)
+        applies = QLabel(
+            "Berlaku saat worker berikutnya dimulai. Transkrip yang sudah selesai tidak pernah "
+            "diulang karena perubahan pengaturan."
+        )
+        applies.setObjectName("helperText")
+        applies.setWordWrap(True)
+        layout.addWidget(applies)
+        layout.addStretch(1)
+        return self._scroll(inner)
+
+    def _settings_export_tab(self) -> QWidget:
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(4, 12, 4, 12)
+        layout.setSpacing(10)
+        intro = QLabel(
+            "Markdown harian, TXT, CSV, dan JSONL selalu dibuat. Opsi di bawah menambah "
+            "keluaran atau mengubah isinya."
+        )
+        intro.setObjectName("helperText")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        self.export_individual_choice = QCheckBox("Buat juga satu berkas Markdown per transkrip")
+        layout.addWidget(self.export_individual_choice)
+        self.export_generated_at_choice = QCheckBox(
+            "Sertakan waktu pembuatan di Markdown (mematikan hasil yang identik byte-per-byte)"
+        )
+        layout.addWidget(self.export_generated_at_choice)
+        save = QPushButton("Simpan Pengaturan Ekspor")
+        save.setObjectName("primaryButton")
+        save.clicked.connect(self._save_export_settings)
+        layout.addWidget(save, alignment=Qt.AlignmentFlag.AlignLeft)
+        layout.addStretch(1)
+        return self._scroll(inner)
+
+    def _settings_data_tab(self) -> QWidget:
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(4, 12, 4, 12)
+        layout.setSpacing(10)
+        self.data_root_label = QLabel()
+        self.data_root_label.setObjectName("subtle")
+        self.data_root_label.setWordWrap(True)
+        self.data_root_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        if self.paths is not None:
+            self.data_root_label.setText(f"Folder data: {self.paths.root}")
+        layout.addWidget(self.data_root_label)
+        for label, slot, tip in (
+            ("Buka Folder Data", self._open_data_root, "Berisi database, model, hasil, log, dan backup."),
+            ("Backup Sekarang", self._backup, "Membuat paket .dntbackup dari database saat ini."),
+            ("Pulihkan Paket", self._restore, "Database saat ini dibackup lebih dulu."),
+            (
+                "Buat Paket Diagnostik Aman",
+                self._diagnostics,
+                "Berisi log teknis tanpa transkrip, nama, atau audio.",
+            ),
+        ):
+            button = QPushButton(label)
+            button.setToolTip(tip)
+            button.clicked.connect(slot)
+            layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignLeft)
+        layout.addStretch(1)
+        return self._scroll(inner)
 
     def refresh(self) -> None:
+        """Reload derived data. Deliberately never touches editable settings fields."""
+        self._last_data_refresh = time.monotonic()
         if self.service is None:
             self._set_metric(self.metric_total, 0)
             self._set_metric(self.metric_done, 0)
@@ -984,21 +1329,116 @@ class MainWindow(QMainWindow):
         self._set_metric(self.metric_done, counts.completed)
         self._set_metric(self.metric_pending, counts.pending)
         self._set_metric(self.metric_review, counts.review)
+        self.metric_breakdown.setText(
+            f"Rincian Total VN: {counts.completed} selesai · {counts.pending} belum diproses · "
+            f"{counts.failed} gagal atau sumber hilang · {counts.excluded} dikecualikan · "
+            f"{counts.no_speech} tanpa suara."
+        )
         self._refresh_transcript_table()
         self._refresh_review_table()
+        self._refresh_model_status()
+        self._refresh_worker_status()
+
+    def _load_settings_fields(self) -> None:
+        """Read settings from config into the editable controls."""
+        if self.service is None:
+            return
         audio_root = self.service.configured_audio_root()
         chat_root = self.service.configured_chat_root()
         self.audio_root.setText("" if audio_root is None else str(audio_root))
         self.chat_root.setText("" if chat_root is None else str(chat_root))
-        self._refresh_model_status()
-        self._refresh_worker_status()
+        direct = self.service.configured_direct_roots()
+        self.direct_roots_label.setText(
+            "Belum ada. Folder muncul di sini saat Anda memakai Pilih File Audio atau tarik-lepas."
+            if not direct
+            else "Ikut dicakup: " + " · ".join(str(root) for root in direct)
+        )
+        settings = self.service.transcription_settings()
+        _select_data(self.language_choice, settings.language)
+        _select_data(self.task_choice, settings.task)
+        _select_data(self.cpu_choice, settings.cpu_preset)
+        self.batched_choice.setChecked(settings.batched_inference)
+        self.batch_size_choice.setValue(settings.batch_size)
+        self.vad_choice.setChecked(settings.vad_filter)
+        self.beam_choice.setValue(settings.beam_size)
+        self._preview_cpu_threads()
+        export = self.service.export_settings()
+        self.export_individual_choice.setChecked(export.markdown_individual)
+        self.export_generated_at_choice.setChecked(export.include_generated_at)
+
+    def _preview_cpu_threads(self, *_: object) -> None:
+        """Show the concrete thread count, because a preset name alone is opaque."""
+        preset = str(self.cpu_choice.currentData() or "seimbang")
+        threads = config_mod.resolve_cpu_threads(preset)
+        self.cpu_threads_label.setText(
+            f"Menggunakan {threads} dari {os.cpu_count() or threads} thread pada komputer ini."
+        )
+
+    def _save_transcription_settings(self) -> None:
+        service = self._require_service()
+        if service is None:
+            return
+        try:
+            service.save_transcription_settings(
+                language=str(self.language_choice.currentData()),
+                task=str(self.task_choice.currentData()),
+                cpu_preset=str(self.cpu_choice.currentData()),
+                batched_inference=self.batched_choice.isChecked(),
+                batch_size=self.batch_size_choice.value(),
+                vad_filter=self.vad_choice.isChecked(),
+                beam_size=self.beam_choice.value(),
+            )
+            self._show_info(
+                "Pengaturan transkripsi tersimpan. Berlaku saat worker berikutnya dimulai; "
+                "file yang sudah selesai tidak diproses ulang."
+            )
+        except ValueError as exc:
+            self._show_error(exc)
+
+    def _save_export_settings(self) -> None:
+        service = self._require_service()
+        if service is None:
+            return
+        try:
+            service.save_export_settings(
+                markdown_individual=self.export_individual_choice.isChecked(),
+                include_generated_at=self.export_generated_at_choice.isChecked(),
+            )
+            self._show_info("Pengaturan ekspor tersimpan. Klik Buat Hasil untuk menerapkannya.")
+        except ValueError as exc:
+            self._show_error(exc)
+
+    def _clear_direct_roots(self) -> None:
+        service = self._require_service()
+        if service is None:
+            return
+        confirmed = QMessageBox.question(
+            self,
+            APP_NAME,
+            "Keluarkan folder batch langsung dari cakupan?\n\n"
+            "Tidak ada file audio yang dihapus. Transkrip yang sudah ada tetap tersimpan, "
+            "tetapi file di folder itu tidak lagi dihitung di Beranda.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmed != QMessageBox.StandardButton.Yes:
+            return
+        service.clear_direct_roots()
+        self._load_settings_fields()
+        self.refresh()
+
+    def _open_data_root(self) -> None:
+        if self.paths is None:
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.paths.root))):
+            self._show_error(RuntimeError("Folder data tidak dapat dibuka."))
 
     def _refresh_transcript_table(self) -> None:
         if self.service is None:
             return
         state = self.state_filter.currentData()
         page = self.service.transcript_page(
-            limit=self.PAGE_SIZE,
+            limit=self.page_size,
             offset=self._page_offset,
             state=None if state is None else str(state),
             metadata_query=self.search_input.text(),
@@ -1021,7 +1461,7 @@ class MainWindow(QMainWindow):
     def _refresh_review_table(self) -> None:
         if self.service is None:
             return
-        page = self.service.review_page(limit=self.PAGE_SIZE, offset=self._review_offset)
+        page = self.service.review_page(limit=self.page_size, offset=self._review_offset)
         self._populate_table(self.review_table, page.rows)
         self._set_page_controls(
             total=page.total,
@@ -1032,37 +1472,91 @@ class MainWindow(QMainWindow):
         )
 
     def _populate_table(self, table: QTableWidget, rows: list[Any]) -> None:
-        table.clearSelection()
-        table.setRowCount(len(rows))
-        for index, row in enumerate(rows):
-            values = (
-                row["current_state"],
-                row["sender"] or S.UNKNOWN_SENDER,
-                row["chat"] or "-",
-                row["whatsapp_message_at"] or S.UNKNOWN_WHATSAPP_TIME,
-                row["basename"],
-                row["duration_seconds"] or "-",
-                row["model_name"] or "-",
-                row["quality_status"] or "-",
-                row["last_processed_at"] or "-",
+        """Rebuild a table without stealing the user's selection or scroll position.
+
+        A periodic refresh that silently dropped the selection made "Hapus
+        Riwayat Terpilih" impossible to click in time, so identical data is now
+        left untouched and a real change restores both selection and scroll.
+        """
+        rendered = [
+            (
+                int(row["id"]),
+                (
+                    str(row["current_state"]),
+                    str(row["sender"] or S.UNKNOWN_SENDER),
+                    str(row["chat"] or "-"),
+                    str(row["whatsapp_message_at"] or S.UNKNOWN_WHATSAPP_TIME),
+                    str(row["basename"]),
+                    str(row["duration_seconds"] or "-"),
+                    str(row["model_name"] or "-"),
+                    str(row["quality_status"] or "-"),
+                    str(row["last_processed_at"] or "-"),
+                ),
             )
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(str(value))
-                if column == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, int(row["id"]))
-                table.setItem(index, column, item)
+            for row in rows
+        ]
+        fingerprint = tuple(rendered)
+        if self._table_fingerprints.get(id(table)) == fingerprint:
+            return
+        self._table_fingerprints[id(table)] = fingerprint
+
+        selected_ids = self._selected_ids_in(table)
+        scrollbar = table.verticalScrollBar()
+        scroll_position = scrollbar.value() if scrollbar is not None else 0
+        table.setUpdatesEnabled(False)
+        blocker = QSignalBlocker(table)
+        try:
+            table.clearSelection()
+            table.setRowCount(len(rendered))
+            for index, (audio_id, values) in enumerate(rendered):
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    if column == 0:
+                        item.setData(Qt.ItemDataRole.UserRole, audio_id)
+                    table.setItem(index, column, item)
+        finally:
+            del blocker
+            table.setUpdatesEnabled(True)
+        self._restore_selection(table, selected_ids)
+        if scrollbar is not None:
+            scrollbar.setValue(scroll_position)
         if table is self.table:
             self._update_history_action_state()
 
-    def _selected_audio_ids(self) -> list[int]:
+    @staticmethod
+    def _selected_ids_in(table: QTableWidget) -> set[int]:
+        model = table.selectionModel()
+        if model is None:
+            return set()
         ids: set[int] = set()
-        for index in self.table.selectionModel().selectedRows():
-            anchor = self.table.item(index.row(), 0)
+        for index in model.selectedRows():
+            anchor = table.item(index.row(), 0)
             if anchor is not None:
                 value = anchor.data(Qt.ItemDataRole.UserRole)
                 if isinstance(value, int):
                     ids.add(value)
-        return sorted(ids)
+        return ids
+
+    @staticmethod
+    def _restore_selection(table: QTableWidget, selected_ids: set[int]) -> None:
+        """Reselect rows the user had chosen, skipping any that no longer exist."""
+        if not selected_ids:
+            return
+        selection_model = table.selectionModel()
+        model = table.model()
+        if selection_model is None or model is None:
+            return
+        flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+        for row_index in range(table.rowCount()):
+            anchor = table.item(row_index, 0)
+            if anchor is None:
+                continue
+            value = anchor.data(Qt.ItemDataRole.UserRole)
+            if isinstance(value, int) and value in selected_ids:
+                selection_model.select(model.index(row_index, 0), flags)
+
+    def _selected_audio_ids(self) -> list[int]:
+        return sorted(self._selected_ids_in(self.table))
 
     def _update_history_action_state(self) -> None:
         if hasattr(self, "delete_history_button"):
@@ -1095,15 +1589,15 @@ class MainWindow(QMainWindow):
         except (RuntimeError, ValueError) as exc:
             self._show_error(exc)
 
-    @staticmethod
     def _set_page_controls(
-        *, total: int, offset: int, label: QLabel, previous: QPushButton, next_button: QPushButton
+        self, *, total: int, offset: int, label: QLabel, previous: QPushButton, next_button: QPushButton
     ) -> None:
+        page_size = self.page_size
         first = 0 if total == 0 else offset + 1
-        last = min(total, offset + MainWindow.PAGE_SIZE)
+        last = min(total, offset + page_size)
         label.setText(f"Menampilkan {first}-{last} dari {total}")
         previous.setEnabled(offset > 0)
-        next_button.setEnabled(offset + MainWindow.PAGE_SIZE < total)
+        next_button.setEnabled(offset + page_size < total)
 
     def _refresh_model_status(self) -> None:
         if self.service is None:
@@ -1122,22 +1616,17 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_worker_status(self) -> None:
-        if self.paths is None or not self.paths.worker_status_file.is_file():
+        status = (
+            None if self.paths is None else worker_status.read_status(self.paths.worker_status_file)
+        )
+        if status is None:
+            self._worker_active = False
             self.worker_label.setText("Worker tidak aktif")
             self.worker_progress.setValue(0)
             return
-        try:
-            status = json.loads(self.paths.worker_status_file.read_text(encoding="utf-8"))
-            counts = status.get("counts", {})
-            queued = int(counts.get("queued", 0))
-            completed = int(counts.get("completed", 0))
-            total = queued + completed
-            self.worker_label.setText(
-                status.get("last_safe_message") or f"Worker: {status.get('state', 'tidak diketahui')}"
-            )
-            self.worker_progress.setValue(0 if total == 0 else round(100 * completed / total))
-        except (OSError, ValueError, TypeError):
-            self.worker_label.setText("Status worker tidak dapat dibaca")
+        self._worker_active = worker_status.is_live(status)
+        self.worker_label.setText(worker_status.status_text(status))
+        self.worker_progress.setValue(worker_status.progress_percent(status))
 
     def _run_background(
         self,
@@ -1145,9 +1634,26 @@ class MainWindow(QMainWindow):
         operation: Callable[[], object],
         succeeded: Callable[[object], None],
     ) -> None:
+        """Run a use case that reports nothing until it finishes."""
+        self._run_background_with_progress(label, lambda _job: operation(), succeeded)
+
+    def _run_background_with_progress(
+        self,
+        label: str,
+        operation: Callable[[ServiceJob], object],
+        succeeded: Callable[[object], None],
+        *,
+        progress_label: str | None = None,
+    ) -> None:
         self.operation_label.setText(label)
         job = ServiceJob(operation, self)
         self._jobs.add(job)
+        if progress_label is not None:
+            job.progressed.connect(
+                lambda done, total: self.operation_label.setText(
+                    f"{progress_label} {done}/{total}" if total else progress_label
+                )
+            )
 
         def on_success(result: object) -> None:
             succeeded(result)
@@ -1206,17 +1712,29 @@ class MainWindow(QMainWindow):
             summary = result
             if not isinstance(summary, ScanSummary):
                 return
-            self._show_info(
+            message = (
                 f"Scan selesai: {summary.discovered} file baru, {summary.unchanged} tidak berubah."
             )
+            if summary.source_changed:
+                message += f" {summary.source_changed} sumber berubah."
+            if summary.unreadable:
+                message += f" {summary.unreadable} tidak dapat dibaca."
+            if summary.missing:
+                message += f" {summary.missing} tidak ditemukan lagi."
+            self._show_info(message)
 
-        self._run_background("Memindai folder audio…", service.scan_audio, complete)
+        self._run_background_with_progress(
+            "Memindai folder audio…",
+            lambda job: service.scan_audio(progress=job.report),
+            complete,
+            progress_label="Memindai file",
+        )
 
     def _choose_audio_files(self) -> None:
         """Offer the keyboard-equivalent path for the drag-and-drop zone."""
         selected, _ = QFileDialog.getOpenFileNames(
             self,
-            "Pilih File Audio (maksimal 20)",
+            "Pilih File Audio",
             "",
             "Audio yang didukung (*.opus *.ogg *.mp3 *.wav *.m4a *.aac *.flac *.webm *.mp4)",
         )
@@ -1235,8 +1753,8 @@ class MainWindow(QMainWindow):
             self._show_info(
                 f"{result.selected_count} file ditambahkan dari {result.source_count} pilihan. "
                 f"Scan menemukan {result.scan.discovered} file baru. "
-                "Klik Siapkan & Mulai Transkripsi untuk melihat daftar, memilih model, dan "
-                "mencentang file yang akan diproses."
+                "Klik Siapkan & Mulai Transkripsi untuk memilih model dan cakupan. "
+                "Belum ada audio yang diproses."
             )
 
         self._run_background(
@@ -1514,24 +2032,28 @@ class MainWindow(QMainWindow):
             lambda result: self._show_info(f"Paket diagnostik dibuat: {Path(str(result)).name}"),
         )
 
+    def _queue_search_refresh(self, _: object = None) -> None:
+        """Coalesce keystrokes so one query runs per pause, not per character."""
+        self._search_debounce.start()
+
     def _reset_paging(self, _: object = None) -> None:
         self._page_offset = 0
         self.refresh()
 
     def _previous_page(self) -> None:
-        self._page_offset = max(0, self._page_offset - self.PAGE_SIZE)
+        self._page_offset = max(0, self._page_offset - self.page_size)
         self.refresh()
 
     def _next_page(self) -> None:
-        self._page_offset += self.PAGE_SIZE
+        self._page_offset += self.page_size
         self.refresh()
 
     def _previous_review_page(self) -> None:
-        self._review_offset = max(0, self._review_offset - self.PAGE_SIZE)
+        self._review_offset = max(0, self._review_offset - self.page_size)
         self.refresh()
 
     def _next_review_page(self) -> None:
-        self._review_offset += self.PAGE_SIZE
+        self._review_offset += self.page_size
         self.refresh()
 
     def _open_detail_from_item(self, item: QTableWidgetItem) -> None:
@@ -1681,6 +2203,13 @@ class MainWindow(QMainWindow):
         stop_audio.clicked.connect(self._player.stop)
         open_location.clicked.connect(open_source_location)
         dialog.exec()
+
+
+def _select_data(combo: QComboBox, value: object) -> None:
+    """Select the entry carrying `value`, leaving the box untouched if absent."""
+    index = combo.findData(value)
+    if index >= 0:
+        combo.setCurrentIndex(index)
 
 
 def run_ui(data_dir: Path | None = None, self_test: bool = False) -> int:

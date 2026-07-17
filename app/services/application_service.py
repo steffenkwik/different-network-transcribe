@@ -13,6 +13,7 @@ from pathlib import Path
 
 from app import config as config_mod
 from app.backup.backup_service import BackupService
+from app.config import ExportConfig, TranscriptionConfig, UiConfig
 from app.database.connection import open_connection, transaction
 from app.database.migrations import MigrationRunner
 from app.database.repositories import (
@@ -28,20 +29,71 @@ from app.paths import DataPaths
 from app.runtime import bundled_path
 from app.services.chat_import_service import ChatImportService, ChatScanSummary
 from app.services.diagnostics_service import DiagnosticsService
-from app.services.discovery_service import SUPPORTED_AUDIO_EXTENSIONS, DiscoveryService, ScanSummary
+from app.services.discovery_service import (
+    SUPPORTED_AUDIO_EXTENSIONS,
+    DiscoveryService,
+    ScanProgress,
+    ScanSummary,
+)
 from app.services.metadata_matching_service import MatchingSummary, MetadataMatchingService
 from app.services.worker_control_service import WorkerControlService
 from app.transcription.model_registry import MODELS, ModelRegistry
 from app.version import APP_VERSION
 
+#: The four dashboard cards partition every row by state, except `review`, which
+#: is an overlay. Keeping these as named groups stops the cards from drifting
+#: apart from each other and from the list pages.
+COMPLETED_STATES = ("completed_preferred", "verified")
+PENDING_STATES = ("discovered", "queued", "processing", "stale_source_changed")
+FAILED_STATES = ("failed", "missing_source")
+EXCLUDED_STATES = ("excluded",)
+NO_SPEECH_STATES = ("no_speech",)
+
+#: A rail against a mis-click on a whole drive, not a product limit. The old
+#: 20-file cap was a build-time guard for the coding agent that was left in the
+#: shipped product, which made the archive workflow the app exists for impossible.
+MAXIMUM_DIRECT_FILES = 50_000
+
+#: Rough CPU int8 seconds per voice note, used only until this machine has
+#: measured itself. Deliberately pessimistic: an estimate that is too optimistic
+#: is worse than none.
+_FALLBACK_SECONDS_PER_FILE = {"small": 20.0, "medium": 45.0, "turbo": 25.0, "high": 90.0}
+
+#: Enough finished attempts to trust this machine's own measurement over the default.
+_MEASUREMENT_SAMPLE = 5
+
+
+@dataclass(frozen=True)
+class RunEstimate:
+    """A coarse duration forecast for a batch, and how much to trust it."""
+
+    seconds_per_file: float
+    measured: bool
+
+    def total_seconds(self, file_count: int) -> float:
+        return self.seconds_per_file * max(0, file_count)
+
 
 @dataclass(frozen=True)
 class DashboardCounts:
+    """Counts behind the dashboard cards.
+
+    `total` equals completed + pending + failed + excluded + no_speech, so the
+    cards always add up. `review` deliberately overlaps the others: it mirrors
+    the Review page filter exactly (a completed file with ambiguous metadata
+    still needs a human), so it is presented as an overlay, not a slice.
+    """
+
     total: int
     completed: int
     pending: int
     review: int
     failed: int
+    excluded: int
+    no_speech: int
+
+    def accounted(self) -> int:
+        return self.completed + self.pending + self.failed + self.excluded + self.no_speech
 
 
 @dataclass(frozen=True)
@@ -82,21 +134,32 @@ class ApplicationService:
         config_mod.save(config, self.paths.config_file, self.paths.config_lastgood_file)
 
     def configured_audio_root(self) -> Path | None:
-        roots = self.configured_audio_roots()
+        """The archive folder chosen in Settings; the only folder `scan_audio` walks."""
+        roots = _existing_dirs(
+            config_mod.load(self.paths.config_file, self.paths.config_lastgood_file).paths.audio_roots
+        )
         return roots[0] if roots else None
 
+    def configured_direct_roots(self) -> list[Path]:
+        """Folders that only hold individually picked files; never recursively scanned."""
+        return _existing_dirs(
+            config_mod.load(self.paths.config_file, self.paths.config_lastgood_file).paths.direct_roots
+        )
+
     def configured_audio_roots(self) -> list[Path]:
-        """Return the current explicitly selected locations, never an inferred scan root."""
+        """Every location currently in scope: the archive plus direct-batch folders.
+
+        Counts, lists and the worker queue all use this union, so a direct batch
+        adds work without erasing the archive the user configured.
+        """
         config = config_mod.load(self.paths.config_file, self.paths.config_lastgood_file)
-        roots: list[Path] = []
-        seen: set[str] = set()
-        for raw in config.paths.audio_roots:
-            candidate = Path(raw).expanduser().resolve()
-            key = str(candidate).casefold()
-            if candidate.is_dir() and key not in seen:
-                roots.append(candidate)
-                seen.add(key)
-        return roots
+        return _existing_dirs([*config.paths.audio_roots, *config.paths.direct_roots])
+
+    def clear_direct_roots(self) -> None:
+        """Drop the direct-batch scope without touching the archive or any file."""
+        config = config_mod.load(self.paths.config_file, self.paths.config_lastgood_file)
+        config.paths.direct_roots = []
+        config_mod.save(config, self.paths.config_file, self.paths.config_lastgood_file)
 
     def configured_chat_root(self) -> Path | None:
         config = config_mod.load(self.paths.config_file, self.paths.config_lastgood_file)
@@ -121,41 +184,52 @@ class ApplicationService:
         finally:
             connection.close()
 
-    def scan_audio(self) -> ScanSummary:
+    def scan_audio(self, progress: ScanProgress | None = None) -> ScanSummary:
         root = self.configured_audio_root()
         if root is None:
             raise ValueError("Pilih folder audio terlebih dahulu.")
         connection = open_connection(self.paths.database_file)
         try:
-            return DiscoveryService(connection).scan_audio_root(root)
+            return DiscoveryService(connection).scan_audio_root(root, progress=progress)
         finally:
             connection.close()
 
     def add_audio_files(
-        self, files: list[Path], *, maximum_files: int = 20
+        self, files: list[Path], *, maximum_files: int = MAXIMUM_DIRECT_FILES
     ) -> DirectFileBatchSummary:
-        """Add a bounded, explicit list of local audio files without folder scanning.
+        """Add an explicit list of local audio files without folder scanning.
 
         The source files stay exactly where they are.  Their parent folders are
         only stored as read-only locations so a worker can open each chosen file.
         Replacing the active selection makes the requested files the only queued
         candidates in those locations; it never touches completed transcripts.
+
+        There is no small cap here: the product exists to process an archive of
+        thousands. Adding files still transcribes nothing on its own — the
+        preflight dialog asks for model and scope first, and that is where a
+        large batch is confirmed.
         """
         selected = sorted({path.expanduser().resolve() for path in files}, key=lambda item: str(item).casefold())
         if not selected:
             raise ValueError("Pilih setidaknya satu file audio.")
         if len(selected) > maximum_files:
             raise ValueError(
-                f"Pilih maksimal {maximum_files} file per batch langsung. "
-                "Batas ini melindungi Anda dari transkripsi massal tidak sengaja."
+                f"Sekali tambah maksimal {maximum_files:,} file. ".replace(",", ".")
+                + "Tambahkan sisanya pada batch berikutnya, atau pilih folder audio di Pengaturan & Data."
             )
         invalid = [path.name for path in selected if not path.is_file() or path.suffix.casefold() not in SUPPORTED_AUDIO_EXTENSIONS]
         if invalid:
             raise ValueError("Ada file yang bukan audio didukung: " + ", ".join(invalid[:3]))
 
         roots = sorted({path.parent for path in selected}, key=lambda item: str(item).casefold())
+        # These folders join the scope; they must never replace the archive the
+        # user configured in Settings.
         config = config_mod.load(self.paths.config_file, self.paths.config_lastgood_file)
-        config.paths.audio_roots = [str(root) for root in roots]
+        known = {str(Path(raw).expanduser().resolve()).casefold() for raw in config.paths.direct_roots}
+        config.paths.direct_roots = [
+            *config.paths.direct_roots,
+            *(str(root) for root in roots if str(root).casefold() not in known),
+        ]
         config_mod.save(config, self.paths.config_file, self.paths.config_lastgood_file)
 
         connection = open_connection(self.paths.database_file)
@@ -226,18 +300,56 @@ class ApplicationService:
                    WHERE """ + where + " GROUP BY a.current_state",
                 parameters,
             ).fetchall()
+            # The review card must never disagree with the Review page, so it is
+            # counted by the very same query the page pages through.
+            review = TranscriptRepository(connection).list_page(
+                limit=0, source_roots=active_roots, review_only=True
+            ).total
         finally:
             connection.close()
         counts = {str(row["current_state"]): int(row["total"]) for row in rows}
+
+        def group(states: tuple[str, ...]) -> int:
+            return sum(counts.get(state, 0) for state in states)
+
         return DashboardCounts(
             total=sum(counts.values()),
-            completed=counts.get("completed_preferred", 0),
-            pending=sum(
-                counts.get(state, 0)
-                for state in ("discovered", "queued", "processing", "stale_source_changed")
-            ),
-            review=sum(counts.get(state, 0) for state in ("failed", "missing_source")),
-            failed=counts.get("failed", 0),
+            completed=group(COMPLETED_STATES),
+            pending=group(PENDING_STATES),
+            review=review,
+            failed=group(FAILED_STATES),
+            excluded=group(EXCLUDED_STATES),
+            no_speech=group(NO_SPEECH_STATES),
+        )
+
+    def run_estimate(self, model_key: str) -> RunEstimate:
+        """Estimate per-file time from this machine's own history when possible.
+
+        Before starting a run of thousands the user deserves a number, but a
+        borrowed benchmark would be fiction: only recent completed attempts on
+        the same model on this computer count as measured.
+        """
+        connection = open_connection(self.paths.database_file, read_only=True)
+        try:
+            rows = connection.execute(
+                """SELECT (julianday(completed_at) - julianday(started_at)) * 86400.0 AS seconds
+                     FROM transcription_attempts
+                    WHERE model_name = ? AND state = 'completed'
+                      AND started_at IS NOT NULL AND completed_at IS NOT NULL
+                 ORDER BY id DESC LIMIT 200""",
+                (model_key,),
+            ).fetchall()
+        finally:
+            connection.close()
+        samples = [
+            float(row["seconds"])
+            for row in rows
+            if row["seconds"] is not None and float(row["seconds"]) > 0
+        ]
+        if len(samples) >= _MEASUREMENT_SAMPLE:
+            return RunEstimate(seconds_per_file=sum(samples) / len(samples), measured=True)
+        return RunEstimate(
+            seconds_per_file=_FALLBACK_SECONDS_PER_FILE.get(model_key, 45.0), measured=False
         )
 
     def transcription_candidates(self, *, limit: int = 250, offset: int = 0) -> TranscriptionCandidatePage:
@@ -475,11 +587,15 @@ class ApplicationService:
             connection.close()
 
     def export_all(self) -> int:
+        # The export options were configurable and validated but never read, so
+        # the two checkboxes on the Settings page did nothing at all.
+        options = self.export_settings()
         connection = open_connection(self.paths.database_file)
         try:
-            return ExportService(connection, self.paths.output_dir, app_version=APP_VERSION).export_all()[
-                "records"
-            ]
+            return ExportService(connection, self.paths.output_dir, app_version=APP_VERSION).export_all(
+                include_individual=options.markdown_individual,
+                include_generated_at=options.include_generated_at,
+            )["records"]
         finally:
             connection.close()
 
@@ -509,6 +625,55 @@ class ApplicationService:
             self.paths.reports_dir,
             self.paths.models_dir,
         ).create_bundle()
+
+    def transcription_settings(self) -> TranscriptionConfig:
+        """Read the transcription preferences shown on the Settings page."""
+        return config_mod.load(self.paths.config_file, self.paths.config_lastgood_file).transcription
+
+    def save_transcription_settings(
+        self,
+        *,
+        language: str,
+        task: str,
+        cpu_preset: str,
+        batched_inference: bool,
+        batch_size: int,
+        vad_filter: bool,
+        beam_size: int,
+    ) -> None:
+        """Persist transcription preferences after validating them as a whole.
+
+        These reach the engine on the next worker start. They never invalidate a
+        finished transcript: reuse is decided by source bytes, not by settings.
+        """
+        config = config_mod.load(self.paths.config_file, self.paths.config_lastgood_file)
+        config.transcription.language = language
+        config.transcription.task = task
+        config.transcription.cpu_preset = cpu_preset
+        config.transcription.batched_inference = batched_inference
+        config.transcription.batch_size = batch_size
+        config.transcription.vad_filter = vad_filter
+        config.transcription.beam_size = beam_size
+        config_mod.save(config, self.paths.config_file, self.paths.config_lastgood_file)
+
+    def ui_settings(self) -> UiConfig:
+        """Read presentation preferences the window applies at startup."""
+        return config_mod.load(self.paths.config_file, self.paths.config_lastgood_file).ui
+
+    def export_settings(self) -> ExportConfig:
+        return config_mod.load(self.paths.config_file, self.paths.config_lastgood_file).export
+
+    def save_export_settings(
+        self, *, markdown_individual: bool, include_generated_at: bool
+    ) -> None:
+        config = config_mod.load(self.paths.config_file, self.paths.config_lastgood_file)
+        config.export.markdown_individual = markdown_individual
+        config.export.include_generated_at = include_generated_at
+        config_mod.save(config, self.paths.config_file, self.paths.config_lastgood_file)
+
+    def resolved_cpu_threads(self) -> int:
+        """The concrete thread count the current preset produces on this machine."""
+        return self.transcription_settings().resolved_threads()
 
     def model_status(self) -> dict[str, object]:
         config = config_mod.load(self.paths.config_file, self.paths.config_lastgood_file)
@@ -581,6 +746,19 @@ def _optional_text(value: str | None) -> str | None:
     if value is None:
         return None
     return value.strip() or None
+
+
+def _existing_dirs(raw_paths: list[str]) -> list[Path]:
+    """Resolve configured folders, dropping duplicates and ones that vanished."""
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for raw in raw_paths:
+        candidate = Path(raw).expanduser().resolve()
+        key = str(candidate).casefold()
+        if candidate.is_dir() and key not in seen:
+            roots.append(candidate)
+            seen.add(key)
+    return roots
 
 
 def _source_root_filter(roots: list[Path], column: str) -> tuple[str, list[str]]:

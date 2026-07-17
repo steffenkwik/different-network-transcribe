@@ -65,6 +65,81 @@ def test_restart_rescan_of_completed_sources_creates_zero_attempts_and_zero_queu
         connection.close()
 
 
+def _scanned_archive(tmp_path: Path, count: int):
+    """Discover real files so size and mtime are recorded the way a user's scan does."""
+    from app.services.discovery_service import DiscoveryService
+
+    database = tmp_path / "data" / "Database" / "test.sqlite3"
+    MigrationRunner(database, REPO_ROOT / "migrations", tmp_path / "backups").migrate()
+    source = tmp_path / "source"
+    source.mkdir()
+    for index in range(count):
+        (source / f"voice-{index}.opus").write_bytes(f"synthetic-{index}".encode())
+    connection = open_connection(database)
+    DiscoveryService(connection, duration_probe=lambda _: 3.0).scan_audio_root(source)
+    return connection, source
+
+
+def test_unchanged_sources_are_not_rehashed_on_every_start(tmp_path: Path) -> None:
+    """P1-2 regression: re-reading every byte of the archive delayed each start.
+
+    On a 13,000-file collection this ran before the first voice note could be
+    transcribed, which read as a freeze.
+    """
+    connection, _ = _scanned_archive(tmp_path, 6)
+    try:
+        # The scan already recorded each identity, so preparation re-reads
+        # nothing at all: not on the first start, and not on any later one.
+        first = QueueService(connection).prepare()
+        assert first.queued == 6
+        assert first.rehashed == 0
+
+        second = QueueService(connection).prepare()
+
+        assert second.queued == 6
+        assert second.rehashed == 0
+    finally:
+        connection.close()
+
+
+def test_a_changed_source_is_still_detected_without_trusting_the_stored_hash(
+    tmp_path: Path,
+) -> None:
+    """Skipping the hash must never weaken change detection."""
+    import os
+    import time
+
+    connection, source = _scanned_archive(tmp_path, 3)
+    try:
+        QueueService(connection).prepare()
+        victim = source / "voice-1.opus"
+        victim.write_bytes(b"completely-different-content-of-another-length")
+        # Move mtime clearly outside the recorded second.
+        future = time.time() + 5
+        os.utime(victim, (future, future))
+
+        summary = QueueService(connection).prepare()
+
+        assert summary.rehashed == 1
+        row = connection.execute(
+            "SELECT current_state FROM audio_files WHERE basename = 'voice-1.opus'"
+        ).fetchone()
+        assert str(row["current_state"]) == "stale_source_changed"
+    finally:
+        connection.close()
+
+
+def test_preparation_reports_progress_for_a_long_archive(tmp_path: Path) -> None:
+    connection, _ = _scanned_archive(tmp_path, 4)
+    try:
+        seen: list[tuple[int, int]] = []
+        QueueService(connection).prepare(progress=lambda done, total: seen.append((done, total)))
+        assert seen[0] == (0, 4)
+        assert seen[-1] == (4, 4)
+    finally:
+        connection.close()
+
+
 def test_explicitly_excluded_source_is_never_queued_on_restart(tmp_path: Path) -> None:
     database = tmp_path / "data" / "Database" / "test.sqlite3"
     MigrationRunner(database, REPO_ROOT / "migrations", tmp_path / "backups").migrate()

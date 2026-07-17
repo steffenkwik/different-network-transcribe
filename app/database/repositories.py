@@ -343,27 +343,14 @@ class TranscriptHistoryRepository:
             self.connection.execute(
                 f"DELETE FROM transcription_attempts WHERE audio_file_id IN ({ids_placeholders})", ids
             )
-            # This is a contentless FTS5 table, so SQLite does not support a
-            # normal row DELETE. Rebuild from the authoritative preferred rows
-            # after the small destructive operation instead.
-            self.connection.execute("INSERT INTO transcript_fts(transcript_fts) VALUES ('delete-all')")
-            self.connection.execute("DELETE FROM transcript_fts_map")
+            # The index is contentless but declares contentless_delete=1, so the
+            # cleared rows can simply be removed. Rebuilding the whole index for
+            # a handful of deletions would grow with the archive, not the request.
             self.connection.execute(
-                """INSERT INTO transcript_fts(rowid, text)
-                   SELECT a.id, COALESCE(mt.text, t.normalized_transcript, t.raw_transcript)
-                     FROM audio_files AS a
-                     JOIN transcription_attempts AS t ON t.id = a.preferred_transcript_id
-                     LEFT JOIN manual_transcripts AS mt ON mt.id = a.preferred_manual_transcript_id
-                    WHERE t.state = 'completed'
-                      AND COALESCE(mt.text, t.normalized_transcript, t.raw_transcript) IS NOT NULL"""
+                f"DELETE FROM transcript_fts WHERE rowid IN ({ids_placeholders})", ids
             )
             self.connection.execute(
-                """INSERT INTO transcript_fts_map(rowid, audio_file_id)
-                   SELECT a.id, a.id
-                     FROM audio_files AS a
-                     JOIN transcription_attempts AS t ON t.id = a.preferred_transcript_id
-                    WHERE t.state = 'completed'
-                      AND COALESCE(t.normalized_transcript, t.raw_transcript) IS NOT NULL"""
+                f"DELETE FROM transcript_fts_map WHERE audio_file_id IN ({ids_placeholders})", ids
             )
             self.connection.executemany(
                 """INSERT INTO processing_events(audio_file_id, event_type, event_at, details_json)

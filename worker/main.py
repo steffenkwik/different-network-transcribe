@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from app import config as config_mod
@@ -22,7 +23,7 @@ from app.paths import DataPaths
 from app.runtime import bundled_path
 from app.transcription.engine import FasterWhisperEngine
 from app.transcription.model_registry import ModelError, ModelRegistry
-from worker.runtime import WorkerLoop
+from worker.runtime import WorkerLoop, WorkerStep
 
 
 def _write_failed_status(paths: DataPaths, message: str) -> None:
@@ -33,6 +34,40 @@ def _write_failed_status(paths: DataPaths, message: str) -> None:
         json.dumps({"state": "failed", "last_safe_message": message}), encoding="utf-8"
     )
     temporary.replace(paths.worker_status_file)
+
+
+def _drive(
+    worker: WorkerLoop,
+    *,
+    idle_exit_seconds: float = 30.0,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """Run the loop until an explicit stop or a sustained idle period.
+
+    A paused worker stays alive indefinitely because the user intends to resume
+    it.  An idle worker lingers briefly so that a reprocess or retry command
+    issued right after the queue drains still reaches a live process.
+    """
+    idle_since: float | None = None
+    while True:
+        step = worker.run_one()
+        if step is WorkerStep.STOPPED:
+            return
+        if step in (WorkerStep.PROCESSED, WorkerStep.COMMAND_HANDLED):
+            idle_since = None
+            continue
+        if step is WorkerStep.PAUSED:
+            idle_since = None
+            sleep(1.0)
+            continue
+        now = clock()
+        if idle_since is None:
+            idle_since = now
+        elif now - idle_since >= idle_exit_seconds:
+            worker.finish()
+            return
+        sleep(1.0)
 
 
 def run_worker(data_dir: Path, instance_token: str) -> int:
@@ -60,9 +95,11 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
         bundled_path("migrations"),
         paths.backups_dir,
     ).migrate()
+    # The queue scope is the archive folder plus any direct-batch folders, so a
+    # picked file is transcribed without the archive being replaced.
     roots = [
         Path(raw).expanduser()
-        for raw in cfg.paths.audio_roots
+        for raw in (*cfg.paths.audio_roots, *cfg.paths.direct_roots)
         if Path(raw).expanduser().is_dir()
     ]
     if not roots:
@@ -79,6 +116,7 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
         return 3
     model_data = registry.read().get("models", {}).get(cfg.transcription.default_model, {})
     model_hash = model_data.get("model_artifact_hash") if isinstance(model_data, dict) else None
+    threads = cfg.transcription.resolved_threads()
     attempt_settings: dict[str, object] = {
         "language": cfg.transcription.language,
         "task": cfg.transcription.task,
@@ -87,18 +125,41 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
         "temperature": cfg.transcription.temperature,
         "vad_filter": cfg.transcription.vad_filter,
         "condition_on_previous_text": cfg.transcription.condition_on_previous_text,
+        # Recorded so an attempt's provenance stays honest about how it ran.
+        "cpu_threads": threads,
+        "batched_inference": cfg.transcription.batched_inference,
+        "batch_size": cfg.transcription.batch_size,
     }
+    engine = FasterWhisperEngine(
+        model_directory,
+        language=cfg.transcription.language,
+        task=cfg.transcription.task,
+        beam_size=cfg.transcription.beam_size,
+        temperature=cfg.transcription.temperature,
+        vad_filter=cfg.transcription.vad_filter,
+        condition_on_previous_text=cfg.transcription.condition_on_previous_text,
+        compute_type=cfg.transcription.compute_type,
+        cpu_threads=threads,
+        batched=cfg.transcription.batched_inference,
+        batch_size=cfg.transcription.batch_size,
+    )
+    # Load before taking a lease: files that pass the cheap existence check can
+    # still be a corrupted download, and the user deserves to be told which it is
+    # rather than a generic failure. WorkerLoop.start() reuses this loaded model.
+    try:
+        engine.load()
+    except Exception:
+        log.exception("model failed to load", extra={"model": cfg.transcription.default_model})
+        registry.mark_suspect(cfg.transcription.default_model)
+        _write_failed_status(
+            paths,
+            "Model rusak atau tidak lengkap. Unduh ulang model dari Pengaturan & Data.",
+        )
+        return 3
     worker = WorkerLoop(
         paths.database_file,
         instance_token,
-        FasterWhisperEngine(
-            model_directory,
-            language=cfg.transcription.language,
-            beam_size=cfg.transcription.beam_size,
-            temperature=cfg.transcription.temperature,
-            vad_filter=cfg.transcription.vad_filter,
-            condition_on_previous_text=cfg.transcription.condition_on_previous_text,
-        ),
+        engine,
         paths.worker_status_file,
         active_roots=roots,
         model_name=cfg.transcription.default_model,
@@ -108,12 +169,7 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
     )
     try:
         worker.start()
-        while not worker.stopped:
-            did_work = worker.run_one()
-            if worker.stopped or (not did_work and not worker.paused):
-                break
-            if not did_work:
-                time.sleep(1)
+        _drive(worker)
     except Exception:
         log.exception("worker failed")
         _write_failed_status(

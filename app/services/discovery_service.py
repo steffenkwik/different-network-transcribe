@@ -19,6 +19,13 @@ SUPPORTED_AUDIO_EXTENSIONS = frozenset(
 )
 DurationProbe = Callable[[Path], float | None]
 
+#: Reports discovery progress as (files_done, files_seen_so_far). The total is
+#: not known up front because the tree is walked lazily.
+ScanProgress = Callable[[int, int], None]
+
+#: Frequent enough that a first scan of a large archive visibly moves.
+PROGRESS_EVERY = 25
+
 
 @dataclass(frozen=True)
 class ScanSummary:
@@ -72,7 +79,7 @@ class DiscoveryService:
         self.repository = AudioRepository(connection)
         self.duration_probe = duration_probe
 
-    def scan_audio_root(self, root: Path) -> ScanSummary:
+    def scan_audio_root(self, root: Path, progress: ScanProgress | None = None) -> ScanSummary:
         root = root.resolve()
         if not root.is_dir():
             raise ValueError("Folder audio tidak ditemukan atau bukan folder.")
@@ -83,12 +90,24 @@ class DiscoveryService:
 
         summary = ScanSummary()
         seen: set[str] = set()
-        for path in sorted(root.rglob("*")):
-            if not path.is_file() or path.suffix.casefold() not in SUPPORTED_AUDIO_EXTENSIONS:
-                continue
+        candidates = [
+            path
+            for path in sorted(root.rglob("*"))
+            if path.is_file() and path.suffix.casefold() in SUPPORTED_AUDIO_EXTENSIONS
+        ]
+        total = len(candidates)
+        for index, path in enumerate(candidates):
+            # A first scan of a large archive hashes every byte; without this the
+            # window sits silent for many minutes and reads as a crash.
+            if progress is not None and index % PROGRESS_EVERY == 0:
+                progress(index, total)
             relative_path = normalized_relative_path(path.relative_to(root))
             seen.add(relative_path)
-            summary = self._scan_one(path, source_root_id, relative_path, summary)
+            summary = _combine_scan_summaries(
+                summary, self._scan_one(path, source_root_id, relative_path)
+            )
+        if progress is not None:
+            progress(total, total)
 
         with transaction(self.connection, immediate=True):
             missing = self.repository.mark_missing_paths(source_root_id, seen)
@@ -138,7 +157,9 @@ class DiscoveryService:
         for path in selected:
             summary = _combine_scan_summaries(
                 summary,
-                self._scan_one(path, roots[path.parent], normalized_relative_path(Path(path.name)), ScanSummary()),
+                self._scan_one(
+                    path, roots[path.parent], normalized_relative_path(Path(path.name))
+                ),
             )
 
         with transaction(self.connection, immediate=True):
@@ -160,9 +181,14 @@ class DiscoveryService:
             duplicate_basenames=duplicate_basenames,
         )
 
-    def _scan_one(
-        self, path: Path, source_root_id: int, relative_path: str, summary: ScanSummary
-    ) -> ScanSummary:
+    def _scan_one(self, path: Path, source_root_id: int, relative_path: str) -> ScanSummary:
+        """Return the counters for this one file only.
+
+        Returning a delta rather than a mutated running total is deliberate:
+        each branch below used to rebuild the whole summary and silently dropped
+        the counters it did not mention, so one unchanged file could erase the
+        `discovered` count reported for the files scanned before it.
+        """
         timestamp = now()
         try:
             stat = path.stat()
@@ -202,9 +228,9 @@ class DiscoveryService:
                 self.repository.update_audio_observation(int(at_path["id"]), values)
                 self.repository.record_path(int(at_path["id"]), source_root_id, relative_path)
                 return ScanSummary(
-                    unchanged=summary.unchanged + 1,
-                    unreadable=summary.unreadable + int(not readable),
-                    zero_byte=summary.zero_byte + int(zero_byte),
+                    unchanged=1,
+                    unreadable=int(not readable),
+                    zero_byte=int(zero_byte),
                 )
 
             if digest is not None:
@@ -217,8 +243,8 @@ class DiscoveryService:
                             int(known["id"]), int(known["matched_source_version_id"])
                         )
                         self.repository.set_state(int(known["id"]), "stale_source_changed")
-                        return ScanSummary(source_changed=summary.source_changed + 1)
-                    return ScanSummary(relinked=summary.relinked + 1)
+                        return ScanSummary(source_changed=1)
+                    return ScanSummary(relinked=1)
 
             if at_path is not None:
                 self.repository.update_audio_observation(int(at_path["id"]), values)
@@ -232,7 +258,7 @@ class DiscoveryService:
                     self.repository.mark_source_version_current(int(at_path["id"]), version_id)
                     self.repository.set_state(int(at_path["id"]), "stale_source_changed")
                 self.repository.record_path(int(at_path["id"]), source_root_id, relative_path)
-                return ScanSummary(source_changed=summary.source_changed + 1)
+                return ScanSummary(source_changed=1)
 
             audio_id = self.repository.create_audio(
                 {
@@ -255,9 +281,9 @@ class DiscoveryService:
                 self.repository.mark_source_version_current(audio_id, version_id)
             self.repository.record_path(audio_id, source_root_id, relative_path)
             return ScanSummary(
-                discovered=summary.discovered + 1,
-                unreadable=summary.unreadable + int(not readable),
-                zero_byte=summary.zero_byte + int(zero_byte),
+                discovered=1,
+                unreadable=int(not readable),
+                zero_byte=int(zero_byte),
             )
 
 

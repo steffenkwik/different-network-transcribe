@@ -49,7 +49,7 @@ def test_backup_manifest_records_schema_components_and_audit(tmp_path: Path) -> 
     package = service.create_package(include_output=output)
     with zipfile.ZipFile(package) as archive:
         manifest = json.loads(archive.read("manifest.json"))
-    assert manifest["database_schema_version"] == 5
+    assert manifest["database_schema_version"] == 6
     assert {"database", "output", "model_registry"} <= set(manifest["components"])
     connection = open_connection(source, read_only=True)
     try:

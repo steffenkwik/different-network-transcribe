@@ -45,12 +45,58 @@ def test_privacy_cannot_be_switched_on() -> None:
         cfg.validate()
 
 
-def test_task_translate_is_rejected() -> None:
-    """Blueprint 7.1: task 'transcribe', never 'translate'."""
+def test_translate_is_an_allowed_explicit_task_but_never_the_default() -> None:
+    """Whisper's translate mode runs locally, so the old ban was scope, not privacy.
+
+    It stays opt-in: the default is always plain transcription.
+    """
+    assert AppConfig().transcription.task == "transcribe"
     cfg = AppConfig()
     cfg.transcription.task = "translate"
+    cfg.validate()
+
+
+def test_unknown_task_is_still_rejected() -> None:
+    cfg = AppConfig()
+    cfg.transcription.task = "summarise"
     with pytest.raises(ConfigError):
         cfg.validate()
+
+
+def test_optional_thread_override_survives_a_save_load_cycle(tmp_path: Path) -> None:
+    """Regression: None was written as "", so the first caller of
+    resolved_threads() crashed with a string/int comparison."""
+    config_file = tmp_path / "config.toml"
+    lastgood = tmp_path / "config.lastgood.toml"
+    config_mod.save(AppConfig(), config_file, lastgood)
+
+    loaded = config_mod.load(config_file, lastgood)
+
+    assert loaded.transcription.cpu_threads_override is None
+    assert loaded.transcription.resolved_threads() >= 1
+
+
+def test_thread_override_written_as_empty_string_by_an_older_build_is_tolerated(
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        'schema_version = 1\n[transcription]\ncpu_threads_override = ""\n', encoding="utf-8"
+    )
+
+    loaded = config_mod.load(config_file, None)
+
+    assert loaded.transcription.cpu_threads_override is None
+    assert loaded.transcription.resolved_threads() >= 1
+
+
+def test_explicit_thread_override_is_honoured(tmp_path: Path) -> None:
+    cfg = AppConfig()
+    cfg.transcription.cpu_threads_override = 3
+    config_file = tmp_path / "config.toml"
+    config_mod.save(cfg, config_file, None)
+
+    assert config_mod.load(config_file, None).transcription.resolved_threads() == 3
 
 
 @pytest.mark.parametrize(

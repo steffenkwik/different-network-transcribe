@@ -8,7 +8,7 @@ transkripsi cloud.
 
 1. Unduh installer terbaru dari [GitHub Releases](https://github.com/steffenkwik/different-network-transcribe/releases/latest), lalu jalankan file `DifferentNetworkTranscribe-Setup-x64-v*.exe`.
 2. Atau ekstrak file `DifferentNetworkTranscribe-Portable-x64-v*.zip`, jalankan `DifferentNetworkTranscribe.exe`, dan pilih folder data yang dapat ditulis.
-3. Di Beranda, klik **Pilih File Audio** atau tarik dan lepas hingga 20 file audio. Tidak perlu membuat folder khusus; file tetap di lokasi asal dan akan terlihat pada daftar persiapan sebelum diproses.
+3. Di Beranda, klik **Pilih File Audio** atau tarik dan lepas file audio — satu file maupun ribuan sekaligus. Tidak perlu membuat folder khusus; file tetap di lokasi asal dan akan terlihat pada daftar persiapan sebelum diproses.
 4. Atau, dari **Pengaturan & Data**, pilih folder audio serta folder ekspor chat jika ingin melakukan scan folder.
 5. Unduh atau impor model lokal secara eksplisit, pilih model dan file pada dialog persiapan, lalu mulai transkripsi.
 
@@ -20,6 +20,7 @@ di `SHA256SUMS.txt` sebelum menjalankannya.
 
 - **Small** — paling cepat dan direkomendasikan untuk test pertama.
 - **Medium** — lebih akurat, lebih lambat.
+- **Turbo** — akurasi setara kelas large dengan kecepatan mendekati Small; pilihan terbaik untuk arsip besar. Unduhan sekitar 1,6 GB.
 - **High** — opsi lokal paling akurat, jauh lebih lambat, membutuhkan unduhan sekitar 3,1 GB dan RAM sekitar 5 GB.
 
 Model tidak pernah diunduh otomatis. Pilih secara eksplisit dari **Pengaturan &
@@ -28,10 +29,11 @@ Data**. Audio dan transkrip tidak pernah diunggah ke API transkripsi cloud.
 ## Tambah file langsung dan ambil hasil
 
 Untuk pekerjaan cepat, gunakan **Pilih File Audio** di Beranda atau tarik file ke area
-drop. Aplikasi menerima maksimal 20 file per batch aman, menampilkan semuanya di
-dialog **Siapkan Transkripsi**, dan memberi Anda pilihan model serta checkbox untuk
-mengecualikan file sebelum worker dimulai. Tidak ada audio yang dipindahkan, disalin,
-atau diubah.
+drop. Tidak ada batas kecil: pilih satu file atau seluruh arsip. Dialog **Siapkan
+Transkripsi** menampilkan daftar per halaman, memberi Anda pilihan model, dan meminta
+konfirmasi terpisah untuk batch besar — lengkap dengan perkiraan waktu berdasarkan
+kecepatan komputer Anda sendiri. Tidak ada audio yang dipindahkan, disalin, atau diubah,
+dan tidak ada yang diproses sebelum Anda menekan **Mulai Transkripsi**.
 
 Setelah **Buat Hasil** selesai, folder hasil dibuka otomatis dan lokasi lengkapnya
 ditampilkan di aplikasi. Anda tetap dapat membukanya lagi dengan tombol **Buka Folder

@@ -19,7 +19,12 @@ from typing import Any
 import tomlkit
 from tomlkit.toml_document import TOMLDocument
 
+from app.transcription.model_registry import MODELS
 from app.version import CONFIG_SCHEMA_VERSION
+
+#: The model catalogue is the single source of truth; config only validates
+#: against it, so adding a model never needs a matching edit here.
+MODEL_KEYS = tuple(MODELS)
 
 # --------------------------------------------------------------------------
 # CPU presets (blueprint 7.2). Derived from the machine at runtime.
@@ -61,6 +66,8 @@ class TranscriptionConfig:
     cpu_preset: str = "seimbang"
     cpu_threads_override: int | None = None
     retry_limit: int = 1
+    batched_inference: bool = True
+    batch_size: int = 8
 
     def resolved_threads(self) -> int:
         if self.cpu_threads_override is not None:
@@ -68,13 +75,16 @@ class TranscriptionConfig:
         return resolve_cpu_threads(self.cpu_preset)
 
     def validate(self) -> None:
-        if self.default_model not in ("small", "medium", "high"):
+        if self.default_model not in MODEL_KEYS:
             raise ConfigError(f"default_model tidak dikenal: {self.default_model}")
-        if self.review_model not in ("small", "medium", "high"):
+        if self.review_model not in MODEL_KEYS:
             raise ConfigError(f"review_model tidak dikenal: {self.review_model}")
-        if self.task != "transcribe":
-            # Blueprint 7.1: task 'transcribe', never 'translate'.
-            raise ConfigError("task harus 'transcribe'")
+        if self.task not in ("transcribe", "translate"):
+            # 'translate' is Whisper's own speech-to-English-text mode. It runs
+            # entirely locally, so the original ban was about scope, not privacy,
+            # and the user asked for it. It is never the default and every
+            # attempt records which task produced it.
+            raise ConfigError("task harus 'transcribe' atau 'translate'")
         if self.device != "cpu":
             raise ConfigError("v1 hanya mendukung device 'cpu'")
         if self.language not in ("id", "auto"):
@@ -89,6 +99,10 @@ class TranscriptionConfig:
             raise ConfigError(f"cpu_preset tidak dikenal: {self.cpu_preset}")
         if not 0 <= self.retry_limit <= 5:
             raise ConfigError("retry_limit harus 0-5")
+        if not 1 <= self.batch_size <= 32:
+            raise ConfigError("batch_size harus 1-32")
+        if self.cpu_threads_override is not None and not isinstance(self.cpu_threads_override, int):
+            raise ConfigError("cpu_threads_override harus bilangan bulat atau dikosongkan")
 
 
 @dataclass
@@ -176,7 +190,17 @@ class DiagnosticsConfig:
 
 @dataclass
 class PathsConfig:
+    """Where the app reads from. Two kinds of audio location, never merged.
+
+    `audio_roots` is the archive the user chose in Settings or the wizard, and
+    only those two places may write it. `direct_roots` accumulates the parent
+    folders of files added with the picker or drag-and-drop; letting a quick
+    drag-and-drop overwrite `audio_roots` silently discarded the archive folder
+    and made the dashboard counts jump.
+    """
+
     audio_roots: list[str] = field(default_factory=list)
+    direct_roots: list[str] = field(default_factory=list)
     chat_roots: list[str] = field(default_factory=list)
 
     def validate(self) -> None:
@@ -230,8 +254,16 @@ _SECTIONS: dict[str, type] = {
 
 
 def _section_from_table(cls: type, table: Any) -> Any:
-    known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
-    kwargs = {k: v for k, v in dict(table).items() if k in known}
+    fields = cls.__dataclass_fields__  # type: ignore[attr-defined]
+    kwargs: dict[str, Any] = {}
+    for key, value in dict(table).items():
+        if key not in fields:
+            continue
+        if value == "" and fields[key].default is None:
+            # Config written by a build that stored None as "": treat it as
+            # absent so the optional field keeps its real default.
+            continue
+        kwargs[key] = value
     return cls(**kwargs)
 
 
@@ -260,7 +292,12 @@ def to_document(cfg: AppConfig) -> TOMLDocument:
         section = getattr(cfg, name)
         table = tomlkit.table()
         for key, value in section.__dict__.items():
-            table[key] = value if value is not None else ""
+            if value is None:
+                # TOML has no null. Writing "" instead round-tripped an optional
+                # int back as a string, which crashed the first caller that ever
+                # used it; omitting the key restores the dataclass default.
+                continue
+            table[key] = value
         doc[name] = table
 
     for key, value in cfg._unknown.items():

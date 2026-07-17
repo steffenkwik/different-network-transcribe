@@ -38,6 +38,16 @@ MODELS = {
         1_527_000_000,
         2_684_354_560,
     ),
+    # Large-v3 with the decoder pruned from 32 layers to 4. It keeps large-class
+    # accuracy at roughly small-class speed, which is the combination an archive
+    # of thousands actually needs.
+    "turbo": ModelDefinition(
+        "turbo",
+        "Turbo — Akurat dan tetap cepat",
+        "deepdml/faster-whisper-large-v3-turbo-ct2",
+        1_620_000_000,
+        2_684_354_560,
+    ),
     "high": ModelDefinition(
         "high",
         "High — Paling akurat, paling lambat",
@@ -109,11 +119,31 @@ class ModelRegistry:
             "model_artifact_hash": manifest["model.bin"]["sha256"],
             "manifest": manifest,
         }
+        self._save(current)
+
+    def _save(self, registry: dict[str, Any]) -> None:
+        self.models_dir.mkdir(parents=True, exist_ok=True)
         temp = self.registry_file.with_suffix(".json.tmp")
         temp.write_text(
-            json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+            json.dumps(registry, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
         )
         temp.replace(self.registry_file)
+
+    def mark_suspect(self, key: str) -> None:
+        """Record that weights which pass the cheap check still failed to load.
+
+        `verify(full_hash=False)` only proves the files exist and are non-empty,
+        so a corrupted download keeps its "verified" label until the engine
+        actually rejects it. Recording that here lets the UI advise a redownload
+        instead of repeating a generic failure.
+        """
+        current = self.read()
+        entry = current.get("models", {}).get(key)
+        if not isinstance(entry, dict):
+            return
+        entry["verification_state"] = "suspect"
+        entry["last_verified_at"] = _now()
+        self._save(current)
 
     def read(self) -> dict[str, Any]:
         if self.registry_file.exists():
