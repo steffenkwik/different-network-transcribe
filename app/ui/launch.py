@@ -60,6 +60,7 @@ from PySide6.QtWidgets import (
 
 from app import config as config_mod
 from app.config import CPU_PRESETS
+from app.exports.exporters import ExportResult
 from app.logging_setup import new_session_id, setup_logging
 from app.paths import DataPaths, default_data_root
 from app.resources import strings_id as S
@@ -68,6 +69,7 @@ from app.services.application_service import (
     ApplicationService,
     DirectFileBatchSummary,
     TestBatchSummary,
+    TranscriptPreview,
 )
 from app.services.chat_import_service import ChatScanSummary
 from app.services.discovery_service import ScanSummary
@@ -720,6 +722,147 @@ class TranscriptionSetupDialog(QDialog):
         self.accept()
 
 
+class ExportSetupDialog(QDialog):
+    """Let users name an export and choose formats before any files are written."""
+
+    def __init__(self, default_name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Buat Hasil Transkripsi")
+        self.setModal(True)
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(12)
+        heading = QLabel("Pilih nama dan format hasil")
+        heading.setObjectName("pageTitle")
+        layout.addWidget(heading)
+        helper = QLabel(
+            "Nama kosong memakai nama folder audio aktif. Setiap hasil disimpan dalam foldernya sendiri, "
+            "jadi lokasi berkas selalu jelas."
+        )
+        helper.setObjectName("helperText")
+        helper.setWordWrap(True)
+        layout.addWidget(helper)
+        form = QFormLayout()
+        self.name_input = QLineEdit(default_name)
+        self.name_input.setPlaceholderText(default_name)
+        self.name_input.setToolTip("Contoh: Rapat Tim Juli. Karakter nama file yang tidak aman diganti otomatis.")
+        form.addRow("Nama hasil", self.name_input)
+        layout.addLayout(form)
+        layout.addWidget(QLabel("Format yang dibuat"))
+        self.markdown = QCheckBox("Markdown (.md) — mudah dibaca dan diedit")
+        self.markdown.setChecked(True)
+        self.text = QCheckBox("Teks biasa (.txt)")
+        self.text.setChecked(True)
+        self.csv = QCheckBox("CSV (.csv) — untuk spreadsheet")
+        self.jsonl = QCheckBox("JSONL (.jsonl) — untuk data terstruktur")
+        for choice in (self.markdown, self.text, self.csv, self.jsonl):
+            choice.toggled.connect(self._validate)
+            layout.addWidget(choice)
+        self.individual = QCheckBox("Tambahkan satu Markdown per rekaman")
+        self.individual.setEnabled(True)
+        self.markdown.toggled.connect(self.individual.setEnabled)
+        layout.addWidget(self.individual)
+        self.validation = QLabel()
+        self.validation.setObjectName("helperText")
+        layout.addWidget(self.validation)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.create_button = QPushButton("Buat Hasil")
+        self.create_button.setObjectName("primaryButton")
+        self.create_button.clicked.connect(self.accept)
+        buttons.addButton(self.create_button, QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._validate()
+
+    def formats(self) -> set[str]:
+        return {
+            key
+            for key, checked in (
+                ("markdown", self.markdown.isChecked()),
+                ("text", self.text.isChecked()),
+                ("csv", self.csv.isChecked()),
+                ("jsonl", self.jsonl.isChecked()),
+            )
+            if checked
+        }
+
+    def _validate(self, *_: object) -> None:
+        valid = bool(self.formats())
+        self.validation.setText("" if valid else "Pilih minimal satu format hasil.")
+        self.create_button.setEnabled(valid)
+
+
+class TranscriptPreviewDialog(QDialog):
+    """Bounded local transcript preview, including metadata and timeframe."""
+
+    def __init__(self, entries: list[TranscriptPreview], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.entries = entries
+        self.setWindowTitle("Preview Hasil Transkripsi")
+        self.resize(940, 660)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(12)
+        title = QLabel("Preview hasil transkripsi")
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        helper = QLabel(
+            f"Menampilkan {len(entries)} hasil terbaru dari database lokal. Pilih baris untuk melihat teks, "
+            "waktu WhatsApp, durasi, model, dan status kualitas."
+        )
+        helper.setObjectName("helperText")
+        helper.setWordWrap(True)
+        layout.addWidget(helper)
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["File", "Waktu", "Durasi", "Pengirim / Chat", "Model", "Kualitas"])
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        for index, entry in enumerate(entries):
+            self.table.insertRow(index)
+            values = (
+                entry.basename,
+                entry.whatsapp_timestamp or entry.completed_at or "Waktu tidak diketahui",
+                "-" if entry.duration_seconds is None else f"{entry.duration_seconds:.1f} dtk",
+                " · ".join(value for value in (entry.sender, entry.chat) if value) or "-",
+                entry.model_name or "-",
+                entry.quality_status or "-",
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, index)
+                self.table.setItem(index, column, item)
+        self.table.itemSelectionChanged.connect(self._show_selected)
+        layout.addWidget(self.table, 1)
+        layout.addWidget(QLabel("Teks transkripsi"))
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setMinimumHeight(140)
+        layout.addWidget(self.text)
+        close = QPushButton("Tutup")
+        close.clicked.connect(self.accept)
+        layout.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
+        if entries:
+            self.table.selectRow(0)
+
+    def _show_selected(self) -> None:
+        selected = self.table.selectedItems()
+        if not selected:
+            self.text.clear()
+            return
+        index = selected[0].data(Qt.ItemDataRole.UserRole)
+        if isinstance(index, int) and 0 <= index < len(self.entries):
+            self.text.setPlainText(self.entries[index].transcript)
+
+
 class MainWindow(QMainWindow):
     #: Fallbacks only; the live values come from config via `ui_settings()`.
     PAGE_SIZE = 100
@@ -739,6 +882,8 @@ class MainWindow(QMainWindow):
         self._review_offset = 0
         self._table_fingerprints: dict[int, tuple[object, ...]] = {}
         self._worker_active = False
+        self._previewed_finished_sessions: set[str] = set()
+        self._last_export_dir: Path | None = None
         self._last_data_refresh = 0.0
         # Honour the two UI settings the config has always validated; leaving
         # them unread made them a promise the app never kept.
@@ -982,7 +1127,7 @@ class MainWindow(QMainWindow):
         output_title = QLabel("Hasil dan pemulihan")
         output_title.setObjectName("sectionTitle")
         output_copy.addWidget(output_title)
-        output_info = QLabel("Buat Markdown, TXT, CSV, dan JSONL dari database lokal kapan saja. Pembuatan hasil tidak mentranskripsi ulang audio.")
+        output_info = QLabel("Pilih nama dan format hasil sebelum dibuat. Pembuatan hasil tidak mentranskripsi ulang audio.")
         output_info.setObjectName("helperText")
         output_info.setWordWrap(True)
         output_copy.addWidget(output_info)
@@ -999,6 +1144,15 @@ class MainWindow(QMainWindow):
         self.export_button = QPushButton(S.ACTION_EXPORT)
         self.export_button.clicked.connect(self._export)
         output_layout.addWidget(self.export_button)
+        self.preview_button = QPushButton("Preview Transkripsi")
+        self.preview_button.setToolTip("Tampilkan teks, waktu, durasi, model, dan kualitas hasil terbaru.")
+        self.preview_button.clicked.connect(self._show_transcript_preview)
+        output_layout.addWidget(self.preview_button)
+        self.open_last_export_button = QPushButton("Buka Hasil Terakhir")
+        self.open_last_export_button.setEnabled(False)
+        self.open_last_export_button.setToolTip("Membuka folder hasil spesifik dari ekspor terakhir.")
+        self.open_last_export_button.clicked.connect(self._open_last_export)
+        output_layout.addWidget(self.open_last_export_button)
         self.open_output_button = QPushButton(S.ACTION_OPEN_OUTPUT)
         self.open_output_button.clicked.connect(self._open_output)
         output_layout.addWidget(self.open_output_button)
@@ -1716,6 +1870,16 @@ class MainWindow(QMainWindow):
         self._worker_active = worker_status.is_live(status)
         self.worker_label.setText(worker_status.status_text(status))
         self.worker_progress.setValue(worker_status.progress_percent(status))
+        if str(status.get("state")) == "finished" and self.service is not None:
+            session = status.get("session")
+            session_key = (
+                str(session.get("started_at"))
+                if isinstance(session, dict) and session.get("started_at")
+                else "finished"
+            )
+            if session_key not in self._previewed_finished_sessions:
+                self._previewed_finished_sessions.add(session_key)
+                QTimer.singleShot(0, self._show_transcript_preview)
 
     def _run_background(
         self,
@@ -1880,22 +2044,56 @@ class MainWindow(QMainWindow):
         service = self._require_service()
         if service is None:
             return
+        dialog = ExportSetupDialog(service.default_export_name(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
 
         def complete(result: object) -> None:
-            if not isinstance(result, int):
+            if not isinstance(result, ExportResult):
                 return
-            count = result
-            output_path = str(self.paths.output_dir) if self.paths is not None else "folder hasil aplikasi"
-            self._open_output(show_error=False)
+            self._last_export_dir = result.output_dir
+            self.open_last_export_button.setEnabled(True)
+            self.output_path_label.setText(f"Hasil terakhir: {result.output_dir}")
+            self._open_last_export(show_error=False)
             self._show_info(
-                f"Hasil dibuat untuk {count} transkrip. Folder hasil dibuka otomatis.\n\n{output_path}"
+                f"Hasil dibuat untuk {result.records} transkrip. Folder hasil spesifik dibuka otomatis.\n\n"
+                f"{result.output_dir}"
             )
 
         self._run_background(
             "Membuat hasil dari database lokal…",
-            service.export_all,
+            lambda: service.export_selected(
+                name=dialog.name_input.text(),
+                formats=dialog.formats(),
+                include_individual=dialog.individual.isChecked(),
+            ),
             complete,
         )
+
+    def _show_transcript_preview(self) -> None:
+        service = self._require_service()
+        if service is None:
+            return
+        try:
+            entries = service.transcript_preview()
+        except ValueError as exc:
+            self._show_error(exc)
+            return
+        if not entries:
+            self._show_info("Belum ada hasil transkripsi untuk dipreview.")
+            return
+        TranscriptPreviewDialog(entries, self).exec()
+
+    def _open_last_export(self, *, show_error: bool = True) -> bool:
+        if self._last_export_dir is None:
+            if show_error:
+                QMessageBox.warning(self, APP_NAME, "Belum ada hasil ekspor khusus pada sesi ini.")  # type: ignore[call-arg]
+            return False
+        self._last_export_dir.mkdir(parents=True, exist_ok=True)
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._last_export_dir)))
+        if not opened and show_error:
+            QMessageBox.warning(self, APP_NAME, "Folder hasil terakhir tidak dapat dibuka.")  # type: ignore[call-arg]
+        return opened
 
     def _open_output(self, *, show_error: bool = True) -> bool:
         """Open only the app-owned derived-output directory in Windows Explorer."""

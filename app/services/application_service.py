@@ -24,7 +24,7 @@ from app.database.repositories import (
     TranscriptRepository,
     now,
 )
-from app.exports.exporters import ExportService
+from app.exports.exporters import ExportResult, ExportService, _safe_name
 from app.paths import DataPaths
 from app.runtime import bundled_path
 from app.services.chat_import_service import ChatImportService, ChatScanSummary
@@ -94,6 +94,22 @@ class DashboardCounts:
 
     def accounted(self) -> int:
         return self.completed + self.pending + self.failed + self.excluded + self.no_speech
+
+
+@dataclass(frozen=True)
+class TranscriptPreview:
+    """A bounded, local-only preview row shown after a worker finishes."""
+
+    audio_file_id: int
+    basename: str
+    whatsapp_timestamp: str | None
+    duration_seconds: float | None
+    sender: str | None
+    chat: str | None
+    model_name: str | None
+    quality_status: str | None
+    completed_at: str | None
+    transcript: str
 
 
 @dataclass(frozen=True)
@@ -596,6 +612,75 @@ class ApplicationService:
                 include_individual=options.markdown_individual,
                 include_generated_at=options.include_generated_at,
             )["records"]
+        finally:
+            connection.close()
+
+    def default_export_name(self) -> str:
+        """Use the active source-folder name unless the user provides a name."""
+        roots = self.configured_audio_roots()
+        return _safe_name(roots[0].name) if len(roots) == 1 and roots[0].name else "transkrip"
+
+    def export_selected(
+        self,
+        *,
+        name: str | None,
+        formats: set[str],
+        include_individual: bool = False,
+    ) -> ExportResult:
+        chosen_name = _safe_name(name.strip()) if name and name.strip() else self.default_export_name()
+        options = self.export_settings()
+        connection = open_connection(self.paths.database_file)
+        try:
+            return ExportService(connection, self.paths.output_dir, app_version=APP_VERSION).export_selected(
+                name=chosen_name,
+                formats=formats,
+                include_individual=include_individual,
+                include_generated_at=options.include_generated_at,
+            )
+        finally:
+            connection.close()
+
+    def transcript_preview(self, *, limit: int = 100) -> list[TranscriptPreview]:
+        """Read a capped completed-transcript preview for the post-run review UI."""
+        if not 1 <= limit <= 500:
+            raise ValueError("Jumlah preview harus antara 1 dan 500.")
+        connection = open_connection(self.paths.database_file, read_only=True)
+        try:
+            rows = connection.execute(
+                """
+                SELECT a.id, a.basename, a.duration_seconds, t.model_name, t.quality_status, t.completed_at,
+                       COALESCE(o.sender, r.sender_original) AS sender,
+                       COALESCE(o.chat, r.chat_original) AS chat,
+                       COALESCE(o.whatsapp_message_at, r.whatsapp_message_at) AS whatsapp_timestamp,
+                       COALESCE(mt.text, t.normalized_transcript, t.raw_transcript) AS transcript
+                  FROM audio_files AS a
+                  JOIN transcription_attempts AS t ON t.id = a.preferred_transcript_id
+             LEFT JOIN manual_transcripts AS mt ON mt.id = a.preferred_manual_transcript_id
+             LEFT JOIN manual_metadata_overrides AS o ON o.audio_file_id = a.id AND o.active = 1
+             LEFT JOIN metadata_matches AS m ON m.audio_file_id = a.id AND m.selected = 1
+             LEFT JOIN chat_voice_references AS r ON r.id = m.chat_voice_reference_id
+                 WHERE t.state = 'completed'
+                   AND COALESCE(mt.text, t.normalized_transcript, t.raw_transcript) IS NOT NULL
+              ORDER BY t.completed_at DESC, a.id DESC
+                 LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [
+                TranscriptPreview(
+                    audio_file_id=int(row["id"]),
+                    basename=str(row["basename"]),
+                    whatsapp_timestamp=row["whatsapp_timestamp"],
+                    duration_seconds=row["duration_seconds"],
+                    sender=row["sender"],
+                    chat=row["chat"],
+                    model_name=row["model_name"],
+                    quality_status=row["quality_status"],
+                    completed_at=row["completed_at"],
+                    transcript=str(row["transcript"]),
+                )
+                for row in rows
+            ]
         finally:
             connection.close()
 

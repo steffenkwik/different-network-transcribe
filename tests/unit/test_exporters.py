@@ -126,3 +126,31 @@ def test_exports_are_complete_deterministic_and_rebuildable(tmp_path: Path) -> N
         )
     finally:
         connection.close()
+
+
+def test_selected_export_uses_a_named_folder_and_only_requested_formats(tmp_path: Path) -> None:
+    database = tmp_path / "Database" / "test.sqlite3"
+    MigrationRunner(database, REPO_ROOT / "migrations", tmp_path / "Backups").migrate()
+    connection = open_connection(database)
+    try:
+        _seed(connection, "2026-07-15T20:31:00+07:00", "isi hasil", "named")
+        result = ExportService(connection, tmp_path / "Output").export_selected(
+            name="Rapat: Tim?",
+            formats={"markdown", "csv"},
+        )
+        assert result.records == 1
+        assert result.output_dir == tmp_path / "Output" / "Rapat_ Tim_"
+        assert (result.output_dir / "Markdown" / "Rapat_ Tim_.md").is_file()
+        assert (result.output_dir / "CSV" / "Rapat_ Tim_.csv").is_file()
+        assert not (result.output_dir / "Text").exists()
+        assert not (result.output_dir / "JSONL").exists()
+        audit = connection.execute(
+            "SELECT format, options_json, output_path, status FROM export_runs ORDER BY id DESC"
+        ).fetchone()
+        assert audit is not None
+        assert audit["format"] == "selected"
+        assert json.loads(audit["options_json"])["formats"] == ["csv", "markdown"]
+        assert audit["output_path"] == str(result.output_dir)
+        assert audit["status"] == "completed"
+    finally:
+        connection.close()

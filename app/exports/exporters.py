@@ -40,6 +40,15 @@ class ExportRecord:
     latest_error: str | None
 
 
+@dataclass(frozen=True)
+class ExportResult:
+    """A named, user-visible export and the exact files it created."""
+
+    records: int
+    output_dir: Path
+    files: tuple[Path, ...]
+
+
 def atomic_write(path: Path, content: bytes) -> str:
     """Validate bytes before atomically replacing a derived artifact."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -160,12 +169,98 @@ class ExportService:
             raise
         return {"records": len(records)}
 
-    def _output_manifest_hash(self) -> str:
+    def export_selected(
+        self,
+        *,
+        name: str,
+        formats: set[str],
+        include_individual: bool = False,
+        include_generated_at: bool = False,
+    ) -> ExportResult:
+        """Create only the formats chosen by the user in a named output folder.
+
+        The legacy ``export_all`` output stays available for existing users and
+        tests. New UI exports are intentionally self-contained: the folder,
+        the file names, and the audit entry all carry the same user-facing
+        name, so an Explorer button can always open the exact result.
+        """
+        allowed = {"markdown", "text", "csv", "jsonl"}
+        chosen = set(formats)
+        if not chosen:
+            raise ValueError("Pilih minimal satu format hasil.")
+        invalid = chosen - allowed
+        if invalid:
+            raise ValueError("Format hasil tidak dikenal.")
+        safe_name = _safe_name(name)
+        destination = self.output_dir / safe_name
+        options_json = json.dumps(
+            {
+                "formats": sorted(chosen),
+                "include_generated_at": include_generated_at,
+                "include_individual": include_individual,
+                "name": safe_name,
+            },
+            sort_keys=True,
+        )
+        with transaction(self.connection, immediate=True):
+            cursor = self.connection.execute(
+                """INSERT INTO export_runs(format, options_json, started_at, status)
+                   VALUES ('selected', ?, ?, 'running')""",
+                (options_json, now()),
+            )
+        if cursor.lastrowid is None:
+            raise RuntimeError("SQLite tidak mengembalikan ID ekspor.")
+        export_run_id = int(cursor.lastrowid)
+        files: list[Path] = []
+        try:
+            records = self.records()
+            if "markdown" in chosen:
+                files.extend(
+                    self._named_markdown(
+                        records,
+                        destination,
+                        safe_name,
+                        include_individual,
+                        include_generated_at,
+                    )
+                )
+            if "text" in chosen:
+                files.append(self._named_text(records, destination, safe_name))
+            if "csv" in chosen:
+                files.append(self._named_csv(records, destination, safe_name))
+            if "jsonl" in chosen:
+                files.append(self._named_jsonl(records, destination, safe_name))
+            with transaction(self.connection, immediate=True):
+                self.connection.execute(
+                    """UPDATE export_runs
+                       SET completed_at = ?, record_count = ?, output_path = ?, output_sha256 = ?,
+                           status = 'completed'
+                       WHERE id = ?""",
+                    (
+                        now(),
+                        len(records),
+                        str(destination),
+                        self._output_manifest_hash(destination),
+                        export_run_id,
+                    ),
+                )
+        except OSError as exc:
+            with transaction(self.connection, immediate=True):
+                self.connection.execute(
+                    """UPDATE export_runs SET completed_at = ?, status = 'failed', error = ?
+                       WHERE id = ?""",
+                    (now(), type(exc).__name__, export_run_id),
+                )
+            raise
+        return ExportResult(records=len(records), output_dir=destination, files=tuple(files))
+
+    def _output_manifest_hash(self, directory: Path | None = None) -> str:
         """Hash derived artifacts for the export audit without changing their bytes."""
-        files = sorted(path for path in self.output_dir.rglob("*") if path.is_file())
+        root = directory or self.output_dir
+        files = sorted(path for path in root.rglob("*") if path.is_file())
         manifest = [
             {
-                "path": str(path.relative_to(self.output_dir).as_posix()),
+                "path": str(path.relative_to(root).as_posix()),
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             }
             for path in files
@@ -173,6 +268,50 @@ class ExportService:
         return hashlib.sha256(
             json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
         ).hexdigest()
+
+    def _named_markdown(
+        self,
+        records: list[ExportRecord],
+        destination: Path,
+        name: str,
+        individual: bool,
+        generated_at: bool,
+    ) -> list[Path]:
+        path = destination / "Markdown" / f"{name}.md"
+        lines = ["---", "type: whatsapp_voice_note_transcripts", f"record_count: {len(records)}"]
+        if generated_at:
+            lines.append(f"generated_at: {datetime.now().astimezone().isoformat(timespec='seconds')}")
+        lines.extend(["app: Different Network Transcribe", f"app_version: {self.app_version}", "---", ""])
+        for record in records:
+            lines.extend(self._markdown_entry(record))
+        atomic_write(path, ("\n".join(lines).rstrip() + "\n").encode("utf-8"))
+        files = [path]
+        if individual:
+            for record in records:
+                individual_path = (
+                    destination
+                    / "Markdown"
+                    / "Individual"
+                    / f"{_safe_name(record.audio_filename)}__{record.stable_id[:8]}.md"
+                )
+                atomic_write(individual_path, ("\n".join(self._markdown_entry(record)) + "\n").encode("utf-8"))
+                files.append(individual_path)
+        return files
+
+    def _named_text(self, records: list[ExportRecord], destination: Path, name: str) -> Path:
+        path = destination / "Text" / f"{name}.txt"
+        atomic_write(path, self._render_text(records).encode("utf-8"))
+        return path
+
+    def _named_csv(self, records: list[ExportRecord], destination: Path, name: str) -> Path:
+        path = destination / "CSV" / f"{name}.csv"
+        atomic_write(path, self._render_csv(records))
+        return path
+
+    def _named_jsonl(self, records: list[ExportRecord], destination: Path, name: str) -> Path:
+        path = destination / "JSONL" / f"{name}.jsonl"
+        atomic_write(path, self._render_jsonl(records))
+        return path
 
     def _markdown(self, records: list[ExportRecord], individual: bool, generated_at: bool) -> None:
         daily: dict[str, list[ExportRecord]] = defaultdict(list)
@@ -244,28 +383,8 @@ class ExportService:
         return lines
 
     def _text(self, records: list[ExportRecord]) -> None:
-        def render(items: list[ExportRecord]) -> str:
-            lines: list[str] = []
-            for record in items:
-                lines.extend(
-                    [
-                        "=" * 60,
-                        f"Timestamp WhatsApp : {record.whatsapp_timestamp or 'Timestamp WhatsApp tidak diketahui'}",
-                        f"Pengirim           : {record.sender or 'Pengirim tidak diketahui'}",
-                        f"Chat               : {record.chat or 'Tidak diketahui'}",
-                        f"Nama File          : {record.audio_filename}",
-                        f"Model              : {record.preferred_model}",
-                        f"Kualitas           : {record.quality_status or 'Cukup'}",
-                        "=" * 60,
-                        "",
-                        record.preferred_transcript,
-                        "",
-                    ]
-                )
-            return "\n".join(lines).rstrip() + "\n"
-
         atomic_write(
-            self.output_dir / "Text" / "semua-transkrip.txt", render(records).encode("utf-8")
+            self.output_dir / "Text" / "semua-transkrip.txt", self._render_text(records).encode("utf-8")
         )
         daily: dict[str, list[ExportRecord]] = defaultdict(list)
         for record in records:
@@ -274,28 +393,55 @@ class ExportService:
         for date, items in daily.items():
             atomic_write(
                 self.output_dir / "Text" / "Daily" / date[:4] / date[:7] / f"{date}.txt",
-                render(items).encode("utf-8"),
+                self._render_text(items).encode("utf-8"),
             )
 
     def _csv(self, records: list[ExportRecord]) -> None:
-        fields = list(ExportRecord.__dataclass_fields__)
-        import io
-
-        stream = io.StringIO(newline="")
-        writer = csv.DictWriter(stream, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(asdict(record) for record in records)
         atomic_write(
             self.output_dir / "CSV" / "semua-transkrip.csv",
-            ("\ufeff" + stream.getvalue()).encode("utf-8"),
+            self._render_csv(records),
         )
 
     def _jsonl(self, records: list[ExportRecord]) -> None:
+        atomic_write(self.output_dir / "JSONL" / "semua-transkrip.jsonl", self._render_jsonl(records))
+
+    @staticmethod
+    def _render_text(records: list[ExportRecord]) -> str:
+        lines: list[str] = []
+        for record in records:
+            lines.extend(
+                [
+                    "=" * 60,
+                    f"Timestamp WhatsApp : {record.whatsapp_timestamp or 'Timestamp WhatsApp tidak diketahui'}",
+                    f"Pengirim           : {record.sender or 'Pengirim tidak diketahui'}",
+                    f"Chat               : {record.chat or 'Tidak diketahui'}",
+                    f"Nama File          : {record.audio_filename}",
+                    f"Model              : {record.preferred_model}",
+                    f"Kualitas           : {record.quality_status or 'Cukup'}",
+                    "=" * 60,
+                    "",
+                    record.preferred_transcript,
+                    "",
+                ]
+            )
+        return "\n".join(lines).rstrip() + "\n"
+
+    @staticmethod
+    def _render_csv(records: list[ExportRecord]) -> bytes:
+        import io
+
+        stream = io.StringIO(newline="")
+        writer = csv.DictWriter(stream, fieldnames=list(ExportRecord.__dataclass_fields__))
+        writer.writeheader()
+        writer.writerows(asdict(record) for record in records)
+        return ("\ufeff" + stream.getvalue()).encode("utf-8")
+
+    @staticmethod
+    def _render_jsonl(records: list[ExportRecord]) -> bytes:
         content = "".join(
-            json.dumps(asdict(record), ensure_ascii=False, sort_keys=True) + "\n"
-            for record in records
+            json.dumps(asdict(record), ensure_ascii=False, sort_keys=True) + "\n" for record in records
         )
-        atomic_write(self.output_dir / "JSONL" / "semua-transkrip.jsonl", content.encode("utf-8"))
+        return content.encode("utf-8")
 
 
 def _safe_name(name: str) -> str:
