@@ -41,10 +41,10 @@ Panduan lengkap tersedia di [PANDUAN_INSTALL_DAN_PAKAI.md](PANDUAN_INSTALL_DAN_P
 
 - **Small** — paling cepat dan disarankan untuk percobaan awal.
 - **Medium** — lebih akurat, lebih lambat.
-- **Turbo** — pilihan baik untuk arsip besar; unduhan sekitar 1,6 GB.
-- **High** — paling akurat, paling lambat; unduhan sekitar 3,1 GB dan RAM lebih besar.
+- **Turbo** — pilihan baik untuk arsip besar; sudah disertakan dan langsung siap dipakai.
+- **High** — paling akurat, paling lambat; diunduh terpisah sekitar 3,1 GB dan membutuhkan RAM lebih besar.
 
-Model diunduh hanya ketika Anda memilihnya. Aplikasi tidak mengunggah audio
+Model selain Turbo diunduh hanya ketika Anda memilihnya. Aplikasi tidak mengunggah audio
 atau transkrip ke layanan transkripsi cloud.
 
 ## Keamanan data

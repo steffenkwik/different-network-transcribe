@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.runtime import bundled_path
+
 
 @dataclass(frozen=True)
 class ModelDefinition:
@@ -21,6 +23,7 @@ class ModelDefinition:
     hf_repo: str
     expected_size_bytes: int
     minimum_ram_bytes: int
+    bundled_revision: str | None = None
 
 
 MODELS = {
@@ -47,6 +50,7 @@ MODELS = {
         "deepdml/faster-whisper-large-v3-turbo-ct2",
         1_620_000_000,
         2_684_354_560,
+        "4df90f75321148c3a29a9e2351b7ddf8f5b115a8",
     ),
     "high": ModelDefinition(
         "high",
@@ -99,6 +103,24 @@ class ModelRegistry:
     def _partial_dir(self, key: str) -> Path:
         return self.models_dir / ".partial" / f"{key}-{uuid.uuid4().hex}"
 
+    @staticmethod
+    def _bundled_folder(key: str) -> Path | None:
+        model = MODELS.get(key)
+        if model is None or model.bundled_revision is None:
+            return None
+        folder = bundled_path(f"bundled_models/{key}")
+        return folder if not missing_model_files(folder) else None
+
+    def resolve_model_path(self, key: str) -> Path:
+        """Prefer a user-installed model, then the read-only bundled Turbo."""
+        local = self.models_dir / key
+        if not missing_model_files(local):
+            return local
+        bundled = self._bundled_folder(key)
+        if bundled is not None:
+            return bundled
+        raise ModelError("Model tidak ditemukan atau rusak.")
+
     def _write_registry(
         self, model: ModelDefinition, manifest: dict[str, dict[str, Any]], source: str
     ) -> None:
@@ -147,13 +169,35 @@ class ModelRegistry:
 
     def read(self) -> dict[str, Any]:
         if self.registry_file.exists():
-            return json.loads(self.registry_file.read_text(encoding="utf-8"))
-        return {"schema": 1, "updated_at": _now(), "models": {}}
+            registry = json.loads(self.registry_file.read_text(encoding="utf-8"))
+        else:
+            registry = {"schema": 1, "updated_at": _now(), "models": {}}
+        models = registry.setdefault("models", {})
+        for key, model in MODELS.items():
+            folder = self._bundled_folder(key)
+            if folder is None or key in models:
+                continue
+            models[key] = {
+                "display_name": model.display_name,
+                "engine_model_id": key,
+                "hf_repo": model.hf_repo,
+                "local_folder": str(folder),
+                "expected_size_bytes": model.expected_size_bytes,
+                "min_ram_recommendation_bytes": model.minimum_ram_bytes,
+                "installed": True,
+                "install_source": "bundled",
+                "installed_at": None,
+                "verification_state": "verified",
+                "last_verified_at": None,
+                "model_artifact_hash": model.bundled_revision,
+                "manifest": {},
+            }
+        return registry
 
     def verify(self, key: str, *, full_hash: bool = True) -> dict[str, dict[str, Any]]:
         if key not in MODELS:
             raise ModelError("Model tidak dikenal.")
-        folder = self.models_dir / key
+        folder = self.resolve_model_path(key)
         missing = missing_model_files(folder)
         if missing:
             raise ModelError("Model tidak ditemukan atau rusak.")
@@ -175,6 +219,9 @@ class ModelRegistry:
         model = MODELS.get(key)
         if model is None:
             raise ModelError("Model tidak dikenal.")
+        bundled = self._bundled_folder(key)
+        if bundled is not None:
+            return bundled
         if shutil.disk_usage(self.models_dir.parent).free < model.expected_size_bytes * 1.5:
             raise ModelError("Ruang disk tidak cukup untuk mengunduh model.")
         final = self.models_dir / key

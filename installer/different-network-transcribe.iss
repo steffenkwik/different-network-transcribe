@@ -2,7 +2,7 @@
 ; Version is the single source of truth in app/version.py. build.ps1 passes it in
 ; with /DMyAppVersion=<version>; this literal is only a fallback for direct ISCC runs.
 #ifndef MyAppVersion
-  #define MyAppVersion "0.3.1"
+  #define MyAppVersion "0.3.2"
 #endif
 #define MyAppExeName "DifferentNetworkTranscribe.exe"
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 APP_NAME = "Different Network Transcribe"
 APP_SLUG = "DifferentNetworkTranscribe"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 
 # Bumped only when the on-disk schema changes. The migration runner is the
 # authority; this constant is what backups and diagnostics report.

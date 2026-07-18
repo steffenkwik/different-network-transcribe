@@ -4,8 +4,8 @@
 
 | Pilihan | Untuk siapa | Unduh |
 | --- | --- | --- |
-| Installer Windows | Kebanyakan pengguna; membuat shortcut dan uninstaller. | [Unduh EXE installer](https://github.com/steffenkwik/different-network-transcribe/releases/download/v0.3.1/DifferentNetworkTranscribe-Setup-x64-v0.3.1.exe) |
-| Portable Windows | Tidak ingin instalasi; jalankan langsung dari folder hasil ekstrak. | [Unduh ZIP portable](https://github.com/steffenkwik/different-network-transcribe/releases/download/v0.3.1/DifferentNetworkTranscribe-Portable-x64-v0.3.1.zip) |
+| Installer Windows | Kebanyakan pengguna; membuat shortcut dan uninstaller. | [Unduh EXE installer](https://github.com/steffenkwik/different-network-transcribe/releases/download/v0.3.2/DifferentNetworkTranscribe-Setup-x64-v0.3.2.exe) |
+| Portable Windows | Tidak ingin instalasi; jalankan langsung dari folder hasil ekstrak. | [Unduh ZIP portable](https://github.com/steffenkwik/different-network-transcribe/releases/download/v0.3.2/DifferentNetworkTranscribe-Portable-x64-v0.3.2.zip) |
 
 Semua rilis resmi tersedia di [halaman GitHub Releases](https://github.com/steffenkwik/different-network-transcribe/releases).
 Jangan gunakan **Code → Download ZIP** untuk memasang aplikasi: ZIP tersebut
@@ -17,7 +17,7 @@ berisi source code, bukan aplikasi EXE.
 
 1. Klik **Unduh EXE installer** di atas.
 2. Periksa SHA-256 sesuai bagian keamanan di bawah.
-3. Jalankan `DifferentNetworkTranscribe-Setup-x64-v0.3.1.exe`.
+3. Jalankan `DifferentNetworkTranscribe-Setup-x64-v0.3.2.exe`.
 4. Ikuti langkah instalasi lalu buka aplikasi dari Start Menu atau shortcut desktop.
 
 ### Portable ZIP
@@ -29,7 +29,7 @@ berisi source code, bukan aplikasi EXE.
 
 ## Pemeriksaan keamanan sebelum menjalankan EXE
 
-Setiap release menyediakan [SHA256SUMS.txt](https://github.com/steffenkwik/different-network-transcribe/releases/download/v0.3.1/SHA256SUMS.txt).
+Setiap release menyediakan [SHA256SUMS.txt](https://github.com/steffenkwik/different-network-transcribe/releases/download/v0.3.2/SHA256SUMS.txt).
 Checksum mendeteksi file yang rusak atau berubah saat unduhan. Ini **bukan**
 pengganti pemeriksaan antivirus atau tanda tangan kode.
 
@@ -41,8 +41,8 @@ Cara termudah pada Windows:
    berkas yang sama di `SHA256SUMS.txt`.
 
 ```powershell
-Get-FileHash .\DifferentNetworkTranscribe-Setup-x64-v0.3.1.exe -Algorithm SHA256
-Get-FileHash .\DifferentNetworkTranscribe-Portable-x64-v0.3.1.zip -Algorithm SHA256
+Get-FileHash .\DifferentNetworkTranscribe-Setup-x64-v0.3.2.exe -Algorithm SHA256
+Get-FileHash .\DifferentNetworkTranscribe-Portable-x64-v0.3.2.zip -Algorithm SHA256
 ```
 
 Atau gunakan [VERIFIKASI_DOWNLOAD.ps1](VERIFIKASI_DOWNLOAD.ps1) dari repository
@@ -51,7 +51,7 @@ unduh. Contoh:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\VERIFIKASI_DOWNLOAD.ps1 `
-  -File "$HOME\Downloads\DifferentNetworkTranscribe-Setup-x64-v0.3.1.exe" `
+  -File "$HOME\Downloads\DifferentNetworkTranscribe-Setup-x64-v0.3.2.exe" `
   -Manifest "$HOME\Downloads\SHA256SUMS.txt"
 ```
 

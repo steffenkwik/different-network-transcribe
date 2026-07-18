@@ -106,10 +106,10 @@ def run_worker(data_dir: Path, instance_token: str) -> int:
         _write_failed_status(paths, "Tambahkan file audio atau pilih folder audio terlebih dahulu.")
         log.error("worker has no configured audio root")
         return 4
-    model_directory = paths.models_dir / cfg.transcription.default_model
     registry = ModelRegistry(paths.models_dir)
     try:
         registry.verify(cfg.transcription.default_model, full_hash=False)
+        model_directory = registry.resolve_model_path(cfg.transcription.default_model)
     except ModelError:
         _write_failed_status(paths, "Model tidak ditemukan atau rusak.")
         log.error("model missing", extra={"model": cfg.transcription.default_model})
